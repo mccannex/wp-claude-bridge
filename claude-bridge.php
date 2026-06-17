@@ -8,6 +8,7 @@
  * Release Asset:     true
  *
  * Endpoints:
+ *   GET    claude-bridge/v1/instructions                        markdown briefing for session bootstrap
  *   GET    claude-bridge/v1/context                             one-call site snapshot
  *   GET    claude-bridge/v1/snippets                           list all snippets (both plugins)
  *   GET    claude-bridge/v1/snippets/{plugin}/{id}             get one snippet
@@ -26,6 +27,15 @@ add_action( 'rest_api_init', function () {
 
     $ns = 'claude-bridge/v1';
     $auth = fn( $req ) => current_user_can( 'manage_options' );
+
+    // -------------------------------------------------------------------------
+    // GET /instructions
+    // -------------------------------------------------------------------------
+    register_rest_route( $ns, '/instructions', [
+        'methods'             => 'GET',
+        'callback'            => 'claude_bridge_instructions',
+        'permission_callback' => $auth,
+    ] );
 
     // -------------------------------------------------------------------------
     // GET /context
@@ -110,6 +120,121 @@ add_action( 'rest_api_init', function () {
         ],
     ] );
 } );
+
+// =============================================================================
+// /instructions — markdown briefing assembled fresh each request
+// =============================================================================
+
+define( 'CLAUDE_BRIDGE_BASE_DOCTRINE', <<<'MD'
+# Claude WP Bridge — Operating Instructions
+
+You are assisting with WordPress / WooCommerce client work through the Chrome
+extension. These are your standing instructions on every site. A per-site overlay
+may be appended below this section; where it conflicts, the overlay wins.
+
+## Orientation
+- The Claude Bridge plugin is active on this site. Use `GET /wp-json/claude-bridge/v1/context`
+  for a full structured site snapshot whenever you need details not in this briefing.
+- Never assume a capability is present — check before acting. Degrade gracefully when
+  something is unavailable (fall back to core REST, then to UI clicking).
+
+## Core discipline
+- Prefer composing existing WP/WC REST endpoints over bespoke actions.
+- All mutating operations follow: plan → checkpoint → execute → verify → (resumable).
+- Mutations default to `dry_run`. Show the full plan and wait for explicit approval
+  before anything writes.
+- UI clicking is a fallback, not the default. Reach for REST / JS first.
+
+## Hard limits
+- No arbitrary code execution against production.
+- Treat client data as confidential — never send it off-site or log it anywhere
+  outside this session.
+- On any failure mid-sequence: STOP, report current state, and let the operator
+  take over as admin.
+
+## Recipes
+- For known operations load the matching recipe and follow its decomposed steps.
+- If no recipe fits, propose a decomposition for review before acting.
+
+## Output
+- Lead with the plan / diff, not prose. Reference order / user / post IDs explicitly.
+- After each step, state what changed and what you verified.
+MD
+);
+
+function claude_bridge_instructions() {
+    $ctx  = claude_bridge_context()->get_data();
+    $site = $ctx['site'];
+    $md   = CLAUDE_BRIDGE_BASE_DOCTRINE;
+
+    // ---- Site ----
+    $md .= "\n---\n\n## Site\n\n";
+    $md .= "- **Name:** {$site['name']}\n";
+    $md .= "- **URL:** {$site['url']}\n";
+    $md .= "- **WP version:** {$site['wp_version']}\n";
+    $md .= "- **Timezone:** {$site['timezone']}\n";
+    $md .= "- **REST root:** {$site['url']}/wp-json/\n";
+
+    // ---- Active plugins (summary) ----
+    $plugin_names = array_column( $ctx['plugins'], 'name' );
+    $md .= "\n## Active plugins\n\n" . implode( ', ', $plugin_names ) . "\n";
+
+    // ---- WooCommerce ----
+    if ( $ctx['woocommerce'] ) {
+        $wc = $ctx['woocommerce'];
+        $md .= "\n## WooCommerce\n\n";
+        $md .= "- Version: {$wc['version']}, currency: {$wc['currency']}\n";
+        $md .= "- Order statuses: " . implode( ', ', array_keys( $wc['order_statuses'] ) ) . "\n";
+        $md .= "- Payment gateways: " . implode( ', ', $wc['payment_gateways'] ) . "\n";
+    }
+
+    // ---- Snippet plugins ----
+    $snip = $ctx['snippets'];
+    $md  .= "\n## Snippet plugins\n\n";
+    foreach ( $snip as $slug => $info ) {
+        $status = $info['active'] ? "active v{$info['version']}" : 'not active';
+        $md    .= "- **{$slug}:** {$status}\n";
+    }
+    if ( $snip['wpcode']['active'] || $snip['code-snippets']['active'] ) {
+        $md .= "\nSnippet endpoints available at `claude-bridge/v1/snippets`.\n";
+    }
+
+    // ---- ACF ----
+    if ( ! empty( $ctx['acf'] ) ) {
+        $md .= "\n## ACF field groups\n\n";
+        foreach ( $ctx['acf'] as $group ) {
+            $field_names = array_column( $group['fields'], 'name' );
+            $md .= "- **{$group['title']}** (" . implode( ', ', $field_names ) . ")\n";
+        }
+    }
+
+    // ---- LMS ----
+    if ( $ctx['lms'] ) {
+        $md .= "\n## LMS\n\n- Plugin: {$ctx['lms']['plugin']} v{$ctx['lms']['version']}\n";
+    }
+
+    // ---- Claude Bridge endpoints ----
+    $md .= "\n## Claude Bridge endpoints (`/wp-json/claude-bridge/v1/`)\n\n";
+    $md .= "| Method | Path | Purpose |\n|---|---|---|\n";
+    $md .= "| GET | `/instructions` | This document |\n";
+    $md .= "| GET | `/context` | Full structured site snapshot |\n";
+    $md .= "| GET | `/snippets` | List all snippets (both plugins) |\n";
+    $md .= "| GET/PUT/DELETE | `/snippets/{plugin}/{id}` | Read, update, delete a snippet |\n";
+    $md .= "| POST | `/snippets/{plugin}` | Create a snippet |\n";
+    $md .= "| POST | `/snippets/{plugin}/{id}/toggle` | Enable / disable |\n";
+    $md .= "| POST | `/snippets/code-snippets/{id}/migrate` | Migrate to WP Code Pro |\n";
+    $md .= "| GET | `/introspect/hooks` | All registered WP hooks |\n";
+    $md .= "| GET | `/introspect/scheduler` | Action Scheduler / wp-cron jobs |\n";
+    $md .= "| GET | `/introspect/schema/{table}` | DB table column definitions |\n";
+
+    // ---- Available REST namespaces ----
+    $md .= "\n## Other REST namespaces on this site\n\n";
+    foreach ( $ctx['rest_roots'] as $ns ) {
+        $md .= "- `{$ns}`\n";
+    }
+
+    return new WP_REST_Response( $md, 200, [ 'Content-Type' => 'text/markdown; charset=utf-8' ] );
+}
 
 // =============================================================================
 // /context
