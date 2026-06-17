@@ -44,6 +44,7 @@ first action.
 ## Repo layout
 
 ```
+claude-bridge.php          # WP plugin shell; self-updates via Git Updater
 manifest.json              # version + index of payload files
 bridge/
   userscript.user.js       # thin shell, self-updates via @version
@@ -51,8 +52,6 @@ bridge/
     system-prompt.base.md  # operating doctrine injected every session
     facades.js             # curated window.__claude.* helpers
     walker.js              # object-graph runtime discovery
-plugin/
-  claude-bridge.php        # thin shell, rarely changes
 recipes/
   merge-customers.json
   purge-failed-orders.json
