@@ -34,7 +34,7 @@ add_action( 'rest_api_init', function () {
     register_rest_route( $ns, '/instructions', [
         'methods'             => 'GET',
         'callback'            => 'claude_bridge_instructions',
-        'permission_callback' => $auth,
+        'permission_callback' => '__return_true', // intentionally public — read-only bootstrap doc
     ] );
 
     // -------------------------------------------------------------------------
@@ -388,7 +388,7 @@ function claude_bridge_rest_roots() {
 
 function claude_bridge_current_caps() {
     $user = wp_get_current_user();
-    // Return the capabilities that are actually granted (value === true).
+    if ( ! $user->exists() ) { return []; }
     return array_keys( array_filter( $user->allcaps ) );
 }
 
