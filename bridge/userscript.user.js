@@ -76,10 +76,20 @@
   // --- 2. PAYLOAD (commit-pinned to dodge raw CDN staleness) ------------------
   // Resolve the branch's current commit SHA, then fetch every file at that SHA.
   // A SHA-pinned raw URL is immutable, so it's always fresh AND cacheable.
+  const SHA_CACHE_KEY = 'wp_claude_bridge_sha';
+  const SHA_TTL_MS    = 5 * 60 * 1000; // 5 minutes
+
   async function resolveSha() {
+    try {
+      const cached = JSON.parse(GM_getValue(SHA_CACHE_KEY, 'null'));
+      if (cached && (Date.now() - cached.ts) < SHA_TTL_MS) { return cached.sha; }
+    } catch { /* corrupt cache — fall through */ }
+
     const r = await httpGet(`https://api.github.com/repos/${REPO}/commits/${BRANCH}`);
     if (r.status !== 200) throw new Error('sha resolve failed: ' + r.status);
-    return JSON.parse(r.text).sha;
+    const sha = JSON.parse(r.text).sha;
+    GM_setValue(SHA_CACHE_KEY, JSON.stringify({ sha, ts: Date.now() }));
+    return sha;
   }
   function rawUrl(sha, path) {
     return `https://raw.githubusercontent.com/${REPO}/${sha}/${path}`;
