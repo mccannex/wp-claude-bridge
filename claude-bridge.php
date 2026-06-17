@@ -10,10 +10,17 @@
  * Release Asset:     true
  *
  * Endpoints:
- *   GET  claude-bridge/v1/context        one-call site snapshot
- *   GET  claude-bridge/v1/introspect/hooks
- *   GET  claude-bridge/v1/introspect/scheduler
- *   GET  claude-bridge/v1/introspect/schema/{table}
+ *   GET    claude-bridge/v1/context                             one-call site snapshot
+ *   GET    claude-bridge/v1/snippets                           list all snippets (both plugins)
+ *   GET    claude-bridge/v1/snippets/{plugin}/{id}             get one snippet
+ *   POST   claude-bridge/v1/snippets/{plugin}                  create snippet
+ *   PUT    claude-bridge/v1/snippets/{plugin}/{id}             update snippet
+ *   POST   claude-bridge/v1/snippets/{plugin}/{id}/toggle      enable/disable
+ *   DELETE claude-bridge/v1/snippets/{plugin}/{id}             delete
+ *   POST   claude-bridge/v1/snippets/code-snippets/{id}/migrate migrate → WP Code Pro
+ *   GET    claude-bridge/v1/introspect/hooks
+ *   GET    claude-bridge/v1/introspect/scheduler
+ *   GET    claude-bridge/v1/introspect/schema/{table}
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
@@ -28,6 +35,50 @@ add_action( 'rest_api_init', function () {
     register_rest_route( $ns, '/context', [
         'methods'             => 'GET',
         'callback'            => 'claude_bridge_context',
+        'permission_callback' => $auth,
+    ] );
+
+    // -------------------------------------------------------------------------
+    // Snippets — plugin slug is 'wpcode' or 'code-snippets'
+    // -------------------------------------------------------------------------
+    $plugin_regex = '(?P<plugin>wpcode|code-snippets)';
+    $id_regex     = '(?P<id>[\d]+)';
+
+    register_rest_route( $ns, '/snippets', [
+        'methods'             => 'GET',
+        'callback'            => 'claude_bridge_snippets_list',
+        'permission_callback' => $auth,
+    ] );
+    register_rest_route( $ns, "/snippets/{$plugin_regex}/{$id_regex}", [
+        [
+            'methods'             => 'GET',
+            'callback'            => 'claude_bridge_snippet_get',
+            'permission_callback' => $auth,
+        ],
+        [
+            'methods'             => 'PUT',
+            'callback'            => 'claude_bridge_snippet_update',
+            'permission_callback' => $auth,
+        ],
+        [
+            'methods'             => 'DELETE',
+            'callback'            => 'claude_bridge_snippet_delete',
+            'permission_callback' => $auth,
+        ],
+    ] );
+    register_rest_route( $ns, "/snippets/{$plugin_regex}", [
+        'methods'             => 'POST',
+        'callback'            => 'claude_bridge_snippet_create',
+        'permission_callback' => $auth,
+    ] );
+    register_rest_route( $ns, "/snippets/{$plugin_regex}/{$id_regex}/toggle", [
+        'methods'             => 'POST',
+        'callback'            => 'claude_bridge_snippet_toggle',
+        'permission_callback' => $auth,
+    ] );
+    register_rest_route( $ns, "/snippets/code-snippets/{$id_regex}/migrate", [
+        'methods'             => 'POST',
+        'callback'            => 'claude_bridge_snippet_migrate',
         'permission_callback' => $auth,
     ] );
 
@@ -67,16 +118,24 @@ add_action( 'rest_api_init', function () {
 // =============================================================================
 function claude_bridge_context() {
     return rest_ensure_response( [
-        'site'       => claude_bridge_site_info(),
-        'plugins'    => claude_bridge_active_plugins(),
-        'woocommerce'=> claude_bridge_woocommerce(),
-        'post_types' => claude_bridge_post_types(),
-        'taxonomies' => claude_bridge_taxonomies(),
-        'acf'        => claude_bridge_acf(),
-        'lms'        => claude_bridge_lms(),
-        'rest_roots' => claude_bridge_rest_roots(),
+        'site'         => claude_bridge_site_info(),
+        'plugins'      => claude_bridge_active_plugins(),
+        'woocommerce'  => claude_bridge_woocommerce(),
+        'post_types'   => claude_bridge_post_types(),
+        'taxonomies'   => claude_bridge_taxonomies(),
+        'acf'          => claude_bridge_acf(),
+        'lms'          => claude_bridge_lms(),
+        'snippets'     => claude_bridge_snippet_plugins_info(),
+        'rest_roots'   => claude_bridge_rest_roots(),
         'capabilities' => claude_bridge_current_caps(),
     ] );
+}
+
+function claude_bridge_snippet_plugins_info() {
+    return [
+        'wpcode'        => defined( 'WPCODE_VERSION' ) ? [ 'active' => true, 'version' => WPCODE_VERSION ] : [ 'active' => false ],
+        'code-snippets' => defined( 'CODE_SNIPPETS_VERSION' ) ? [ 'active' => true, 'version' => CODE_SNIPPETS_VERSION, 'rest' => true ] : [ 'active' => false ],
+    ];
 }
 
 function claude_bridge_site_info() {
@@ -287,4 +346,305 @@ function claude_bridge_introspect_schema( WP_REST_Request $req ) {
     // phpcs:ignore WordPress.DB.DirectDatabaseQuery
     $columns = $wpdb->get_results( "DESCRIBE `{$table}`", ARRAY_A );
     return rest_ensure_response( [ 'table' => $table, 'columns' => $columns ] );
+}
+
+// =============================================================================
+// SNIPPETS — shared helpers
+// =============================================================================
+
+// Normalised snippet shape returned by every endpoint.
+function claude_bridge_snippet_format( $plugin, $data ) {
+    return [
+        'plugin'      => $plugin,
+        'id'          => (int) $data['id'],
+        'title'       => $data['title'],
+        'code'        => $data['code'],
+        'code_type'   => $data['code_type'] ?? 'php',
+        'active'      => (bool) $data['active'],
+        'description' => $data['description'] ?? '',
+        'tags'        => $data['tags'] ?? [],
+        'created'     => $data['created'] ?? null,
+        'modified'    => $data['modified'] ?? null,
+    ];
+}
+
+function claude_bridge_error_no_plugin( $plugin ) {
+    return new WP_Error( 'plugin_inactive', "{$plugin} is not active on this site.", [ 'status' => 400 ] );
+}
+
+// =============================================================================
+// SNIPPETS — WP Code Pro (wpcode custom post type)
+// =============================================================================
+
+function claude_bridge_wpcode_list() {
+    if ( ! defined( 'WPCODE_VERSION' ) ) { return []; }
+    $posts = get_posts( [
+        'post_type'      => 'wpcode',
+        'post_status'    => [ 'publish', 'draft' ],
+        'posts_per_page' => -1,
+        'orderby'        => 'title',
+        'order'          => 'ASC',
+    ] );
+    return array_map( 'claude_bridge_wpcode_format', $posts );
+}
+
+function claude_bridge_wpcode_get_post( $id ) {
+    $post = get_post( (int) $id );
+    if ( ! $post || $post->post_type !== 'wpcode' ) { return null; }
+    return $post;
+}
+
+function claude_bridge_wpcode_format( $post ) {
+    $type_terms = get_the_terms( $post->ID, 'wpcode_type' );
+    $tag_terms  = get_the_terms( $post->ID, 'wpcode_tags' );
+    return claude_bridge_snippet_format( 'wpcode', [
+        'id'          => $post->ID,
+        'title'       => $post->post_title,
+        'code'        => $post->post_content,
+        'code_type'   => ( $type_terms && ! is_wp_error( $type_terms ) ) ? $type_terms[0]->slug : 'php',
+        'active'      => $post->post_status === 'publish',
+        'description' => $post->post_excerpt,
+        'tags'        => ( $tag_terms && ! is_wp_error( $tag_terms ) ) ? wp_list_pluck( $tag_terms, 'name' ) : [],
+        'created'     => $post->post_date_gmt,
+        'modified'    => $post->post_modified_gmt,
+    ] );
+}
+
+function claude_bridge_wpcode_save( $fields, $id = 0 ) {
+    $postarr = [
+        'post_type'    => 'wpcode',
+        'post_title'   => sanitize_text_field( $fields['title'] ?? '' ),
+        'post_content' => $fields['code'] ?? '',
+        'post_excerpt' => sanitize_textarea_field( $fields['description'] ?? '' ),
+        'post_status'  => isset( $fields['active'] ) ? ( $fields['active'] ? 'publish' : 'draft' ) : 'draft',
+    ];
+    if ( $id ) { $postarr['ID'] = $id; }
+
+    $post_id = $id ? wp_update_post( $postarr, true ) : wp_insert_post( $postarr, true );
+    if ( is_wp_error( $post_id ) ) { return $post_id; }
+
+    if ( ! empty( $fields['code_type'] ) ) {
+        wp_set_object_terms( $post_id, sanitize_key( $fields['code_type'] ), 'wpcode_type' );
+    }
+    if ( isset( $fields['tags'] ) ) {
+        wp_set_object_terms( $post_id, array_map( 'sanitize_text_field', (array) $fields['tags'] ), 'wpcode_tags' );
+    }
+
+    return get_post( $post_id );
+}
+
+// =============================================================================
+// SNIPPETS — Code Snippets (internal REST proxy)
+// =============================================================================
+
+function claude_bridge_cs_active() {
+    return defined( 'CODE_SNIPPETS_VERSION' );
+}
+
+// Dispatch an internal REST request to the code-snippets namespace.
+function claude_bridge_cs_request( $method, $path, $body = null ) {
+    $req = new WP_REST_Request( $method, '/code-snippets/v1' . $path );
+    if ( $body ) { $req->set_body_params( $body ); }
+    $res = rest_do_request( $req );
+    return [ 'status' => $res->get_status(), 'data' => $res->get_data() ];
+}
+
+function claude_bridge_cs_list() {
+    if ( ! claude_bridge_cs_active() ) { return []; }
+    $r = claude_bridge_cs_request( 'GET', '/snippets' );
+    if ( $r['status'] !== 200 ) { return []; }
+    return array_map( 'claude_bridge_cs_format', (array) $r['data'] );
+}
+
+function claude_bridge_cs_format( $s ) {
+    // Code Snippets returns objects or arrays depending on version.
+    $s = (array) $s;
+    return claude_bridge_snippet_format( 'code-snippets', [
+        'id'          => $s['id'],
+        'title'       => $s['name'] ?? $s['title'] ?? '',
+        'code'        => $s['code'] ?? '',
+        'code_type'   => $s['type'] ?? 'php',
+        'active'      => (bool) ( $s['active'] ?? false ),
+        'description' => $s['desc'] ?? $s['description'] ?? '',
+        'tags'        => $s['tags'] ?? [],
+        'created'     => $s['created'] ?? null,
+        'modified'    => $s['modified'] ?? null,
+    ] );
+}
+
+// Map our unified field names → Code Snippets field names for writes.
+function claude_bridge_cs_body( $fields ) {
+    $body = [];
+    if ( isset( $fields['title'] ) )       { $body['name']   = $fields['title']; }
+    if ( isset( $fields['code'] ) )        { $body['code']   = $fields['code']; }
+    if ( isset( $fields['code_type'] ) )   { $body['type']   = $fields['code_type']; }
+    if ( isset( $fields['active'] ) )      { $body['active'] = (bool) $fields['active']; }
+    if ( isset( $fields['description'] ) ) { $body['desc']   = $fields['description']; }
+    if ( isset( $fields['tags'] ) )        { $body['tags']   = $fields['tags']; }
+    return $body;
+}
+
+// =============================================================================
+// SNIPPETS — endpoint callbacks
+// =============================================================================
+
+function claude_bridge_snippets_list( WP_REST_Request $req ) {
+    $plugin = $req->get_param( 'plugin' ) ?: 'all';
+    $out    = [];
+    if ( $plugin === 'all' || $plugin === 'wpcode' )        { $out = array_merge( $out, claude_bridge_wpcode_list() ); }
+    if ( $plugin === 'all' || $plugin === 'code-snippets' ) { $out = array_merge( $out, claude_bridge_cs_list() ); }
+    return rest_ensure_response( $out );
+}
+
+function claude_bridge_snippet_get( WP_REST_Request $req ) {
+    $plugin = $req['plugin'];
+    $id     = (int) $req['id'];
+
+    if ( $plugin === 'wpcode' ) {
+        if ( ! defined( 'WPCODE_VERSION' ) ) { return claude_bridge_error_no_plugin( 'wpcode' ); }
+        $post = claude_bridge_wpcode_get_post( $id );
+        if ( ! $post ) { return new WP_Error( 'not_found', 'Snippet not found.', [ 'status' => 404 ] ); }
+        return rest_ensure_response( claude_bridge_wpcode_format( $post ) );
+    }
+
+    if ( ! claude_bridge_cs_active() ) { return claude_bridge_error_no_plugin( 'code-snippets' ); }
+    $r = claude_bridge_cs_request( 'GET', "/snippets/{$id}" );
+    if ( $r['status'] === 404 ) { return new WP_Error( 'not_found', 'Snippet not found.', [ 'status' => 404 ] ); }
+    return rest_ensure_response( claude_bridge_cs_format( $r['data'] ) );
+}
+
+function claude_bridge_snippet_create( WP_REST_Request $req ) {
+    $plugin = $req['plugin'];
+    $fields = $req->get_json_params() ?: $req->get_body_params();
+
+    if ( $plugin === 'wpcode' ) {
+        if ( ! defined( 'WPCODE_VERSION' ) ) { return claude_bridge_error_no_plugin( 'wpcode' ); }
+        $post = claude_bridge_wpcode_save( $fields );
+        if ( is_wp_error( $post ) ) { return $post; }
+        return rest_ensure_response( claude_bridge_wpcode_format( $post ) );
+    }
+
+    if ( ! claude_bridge_cs_active() ) { return claude_bridge_error_no_plugin( 'code-snippets' ); }
+    $r = claude_bridge_cs_request( 'POST', '/snippets', claude_bridge_cs_body( $fields ) );
+    if ( $r['status'] >= 400 ) { return new WP_Error( 'cs_error', 'Code Snippets error.', [ 'status' => $r['status'], 'data' => $r['data'] ] ); }
+    return rest_ensure_response( claude_bridge_cs_format( $r['data'] ) );
+}
+
+function claude_bridge_snippet_update( WP_REST_Request $req ) {
+    $plugin = $req['plugin'];
+    $id     = (int) $req['id'];
+    $fields = $req->get_json_params() ?: $req->get_body_params();
+
+    if ( $plugin === 'wpcode' ) {
+        if ( ! defined( 'WPCODE_VERSION' ) ) { return claude_bridge_error_no_plugin( 'wpcode' ); }
+        $post = claude_bridge_wpcode_get_post( $id );
+        if ( ! $post ) { return new WP_Error( 'not_found', 'Snippet not found.', [ 'status' => 404 ] ); }
+        $post = claude_bridge_wpcode_save( $fields, $id );
+        if ( is_wp_error( $post ) ) { return $post; }
+        return rest_ensure_response( claude_bridge_wpcode_format( $post ) );
+    }
+
+    if ( ! claude_bridge_cs_active() ) { return claude_bridge_error_no_plugin( 'code-snippets' ); }
+    $r = claude_bridge_cs_request( 'PUT', "/snippets/{$id}", claude_bridge_cs_body( $fields ) );
+    if ( $r['status'] >= 400 ) { return new WP_Error( 'cs_error', 'Code Snippets error.', [ 'status' => $r['status'], 'data' => $r['data'] ] ); }
+    return rest_ensure_response( claude_bridge_cs_format( $r['data'] ) );
+}
+
+function claude_bridge_snippet_toggle( WP_REST_Request $req ) {
+    $plugin = $req['plugin'];
+    $id     = (int) $req['id'];
+    $body   = $req->get_json_params() ?: $req->get_body_params();
+
+    if ( $plugin === 'wpcode' ) {
+        if ( ! defined( 'WPCODE_VERSION' ) ) { return claude_bridge_error_no_plugin( 'wpcode' ); }
+        $post = claude_bridge_wpcode_get_post( $id );
+        if ( ! $post ) { return new WP_Error( 'not_found', 'Snippet not found.', [ 'status' => 404 ] ); }
+        // Accept explicit { active: bool } or toggle current state.
+        $active = isset( $body['active'] ) ? (bool) $body['active'] : ( $post->post_status !== 'publish' );
+        wp_update_post( [ 'ID' => $id, 'post_status' => $active ? 'publish' : 'draft' ] );
+        return rest_ensure_response( claude_bridge_wpcode_format( get_post( $id ) ) );
+    }
+
+    if ( ! claude_bridge_cs_active() ) { return claude_bridge_error_no_plugin( 'code-snippets' ); }
+    $r_get  = claude_bridge_cs_request( 'GET', "/snippets/{$id}" );
+    if ( $r_get['status'] === 404 ) { return new WP_Error( 'not_found', 'Snippet not found.', [ 'status' => 404 ] ); }
+    $current = (array) $r_get['data'];
+    $active  = isset( $body['active'] ) ? (bool) $body['active'] : ! (bool) $current['active'];
+    $r       = claude_bridge_cs_request( 'PUT', "/snippets/{$id}", [ 'active' => $active ] );
+    return rest_ensure_response( claude_bridge_cs_format( $r['data'] ) );
+}
+
+function claude_bridge_snippet_delete( WP_REST_Request $req ) {
+    $plugin = $req['plugin'];
+    $id     = (int) $req['id'];
+
+    if ( $plugin === 'wpcode' ) {
+        if ( ! defined( 'WPCODE_VERSION' ) ) { return claude_bridge_error_no_plugin( 'wpcode' ); }
+        $post = claude_bridge_wpcode_get_post( $id );
+        if ( ! $post ) { return new WP_Error( 'not_found', 'Snippet not found.', [ 'status' => 404 ] ); }
+        wp_delete_post( $id, true );
+        return rest_ensure_response( [ 'deleted' => true, 'id' => $id, 'plugin' => 'wpcode' ] );
+    }
+
+    if ( ! claude_bridge_cs_active() ) { return claude_bridge_error_no_plugin( 'code-snippets' ); }
+    $r = claude_bridge_cs_request( 'DELETE', "/snippets/{$id}" );
+    if ( $r['status'] === 404 ) { return new WP_Error( 'not_found', 'Snippet not found.', [ 'status' => 404 ] ); }
+    return rest_ensure_response( [ 'deleted' => true, 'id' => $id, 'plugin' => 'code-snippets' ] );
+}
+
+// =============================================================================
+// SNIPPETS — migration: Code Snippets → WP Code Pro
+// =============================================================================
+
+function claude_bridge_snippet_migrate( WP_REST_Request $req ) {
+    $id      = (int) $req['id'];
+    $body    = $req->get_json_params() ?: $req->get_body_params();
+    $dry_run = isset( $body['dry_run'] ) ? (bool) $body['dry_run'] : true;
+    $delete  = isset( $body['delete_source'] ) ? (bool) $body['delete_source'] : false;
+
+    if ( ! claude_bridge_cs_active() )    { return claude_bridge_error_no_plugin( 'code-snippets' ); }
+    if ( ! defined( 'WPCODE_VERSION' ) )  { return claude_bridge_error_no_plugin( 'wpcode' ); }
+
+    // Fetch the source snippet.
+    $r = claude_bridge_cs_request( 'GET', "/snippets/{$id}" );
+    if ( $r['status'] === 404 ) { return new WP_Error( 'not_found', 'Source snippet not found.', [ 'status' => 404 ] ); }
+    $source = claude_bridge_cs_format( $r['data'] );
+
+    if ( $dry_run ) {
+        return rest_ensure_response( [
+            'dry_run' => true,
+            'would'   => [
+                'action'        => 'migrate',
+                'source'        => $source,
+                'target_plugin' => 'wpcode',
+                'delete_source' => $delete,
+            ],
+            'message' => 'dry_run=true: migration not executed. Set dry_run: false to proceed.',
+        ] );
+    }
+
+    // Create in WP Code Pro.
+    $new_post = claude_bridge_wpcode_save( [
+        'title'       => $source['title'],
+        'code'        => $source['code'],
+        'code_type'   => $source['code_type'],
+        'active'      => false, // inactive until operator confirms
+        'description' => $source['description'],
+        'tags'        => $source['tags'],
+    ] );
+    if ( is_wp_error( $new_post ) ) { return $new_post; }
+
+    $result = [
+        'migrated'      => claude_bridge_wpcode_format( $new_post ),
+        'source_id'     => $id,
+        'delete_source' => $delete,
+        'source_deleted'=> false,
+    ];
+
+    if ( $delete ) {
+        $rd = claude_bridge_cs_request( 'DELETE', "/snippets/{$id}" );
+        $result['source_deleted'] = $rd['status'] < 400;
+    }
+
+    return rest_ensure_response( $result );
 }
