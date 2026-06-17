@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "Index of payload files fetched live by the bridge shell. The shell reads this first, then pulls listed files by commit-pinned URL.",
   "channels": {
-    "stable": "master",
+    "stable": "main",
     "dev": "staging"
   },
   "instructions": "bridge/payload/system-prompt.base.md",

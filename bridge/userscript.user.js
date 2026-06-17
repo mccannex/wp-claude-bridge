@@ -10,8 +10,8 @@
 // @grant        GM_getValue
 // @connect      raw.githubusercontent.com
 // @connect      api.github.com
-// @updateURL    https://raw.githubusercontent.com/mccannex/wp-claude-bridge/master/bridge/userscript.user.js
-// @downloadURL  https://raw.githubusercontent.com/mccannex/wp-claude-bridge/master/bridge/userscript.user.js
+// @updateURL    https://raw.githubusercontent.com/mccannex/wp-claude-bridge/main/bridge/userscript.user.js
+// @downloadURL  https://raw.githubusercontent.com/mccannex/wp-claude-bridge/main/bridge/userscript.user.js
 // ==/UserScript==
 
 /*
@@ -29,7 +29,7 @@
   'use strict';
 
   const REPO = 'mccannex/wp-claude-bridge';
-  const BRANCH = 'master'; // channel: stable=master, dev=staging (manifest.channels)
+  const BRANCH = 'main'; // channel: stable=main, dev=staging (manifest.channels)
 
   // --- tiny GM fetch wrapper -> Promise<{status, text}> -----------------------
   function httpGet(url, headers) {

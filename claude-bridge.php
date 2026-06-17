@@ -6,7 +6,7 @@
  *              logged-in admin session via the standard WP REST nonce.
  * Version:     0.1.0
  * GitHub Plugin URI: mccannex/wp-claude-bridge
- * Primary Branch:    master
+ * Primary Branch:    main
  * Release Asset:     true
  *
  * Endpoints:
