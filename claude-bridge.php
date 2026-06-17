@@ -597,31 +597,17 @@ function claude_bridge_snippet_delete( WP_REST_Request $req ) {
 // =============================================================================
 
 function claude_bridge_snippet_migrate( WP_REST_Request $req ) {
-    $id      = (int) $req['id'];
-    $body    = $req->get_json_params() ?: $req->get_body_params();
-    $dry_run = isset( $body['dry_run'] ) ? (bool) $body['dry_run'] : true;
-    $delete  = isset( $body['delete_source'] ) ? (bool) $body['delete_source'] : false;
+    $id     = (int) $req['id'];
+    $body   = $req->get_json_params() ?: $req->get_body_params();
+    $delete = isset( $body['delete_source'] ) ? (bool) $body['delete_source'] : false;
 
-    if ( ! claude_bridge_cs_active() )    { return claude_bridge_error_no_plugin( 'code-snippets' ); }
-    if ( ! defined( 'WPCODE_VERSION' ) )  { return claude_bridge_error_no_plugin( 'wpcode' ); }
+    if ( ! claude_bridge_cs_active() )   { return claude_bridge_error_no_plugin( 'code-snippets' ); }
+    if ( ! defined( 'WPCODE_VERSION' ) ) { return claude_bridge_error_no_plugin( 'wpcode' ); }
 
     // Fetch the source snippet.
     $r = claude_bridge_cs_request( 'GET', "/snippets/{$id}" );
     if ( $r['status'] === 404 ) { return new WP_Error( 'not_found', 'Source snippet not found.', [ 'status' => 404 ] ); }
     $source = claude_bridge_cs_format( $r['data'] );
-
-    if ( $dry_run ) {
-        return rest_ensure_response( [
-            'dry_run' => true,
-            'would'   => [
-                'action'        => 'migrate',
-                'source'        => $source,
-                'target_plugin' => 'wpcode',
-                'delete_source' => $delete,
-            ],
-            'message' => 'dry_run=true: migration not executed. Set dry_run: false to proceed.',
-        ] );
-    }
 
     // Create in WP Code Pro.
     $new_post = claude_bridge_wpcode_save( [
