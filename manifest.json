@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "name": "wp-claude-bridge",
+  "version": "0.1.0",
+  "description": "Index of payload files fetched live by the bridge shell. The shell reads this first, then pulls listed files by commit-pinned URL.",
+  "channels": {
+    "stable": "master",
+    "dev": "staging"
+  },
+  "instructions": "bridge/payload/system-prompt.base.md",
+  "payload": {
+    "facades": "bridge/payload/facades.js",
+    "walker": "bridge/payload/walker.js",
+    "primitives": "shared/primitives.json"
+  },
+  "recipes": {
+    "merge-customers": "recipes/merge-customers.json",
+    "purge-failed-orders": "recipes/purge-failed-orders.json"
+  },
+  "notes": "Per-site overlays and prompts are NOT listed here; they are fetched from the private wp-claude-context repo and composed on top of these files at runtime."
+}

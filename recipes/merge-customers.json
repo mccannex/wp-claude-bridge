@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "id": "merge-customers",
+  "title": "Merge two WooCommerce customer accounts",
+  "summary": "Consolidate a duplicate customer into a master account: reassign orders and subscriptions, transfer course/LMS access, then remove the empty duplicate.",
+  "requires": {
+    "rest": ["wc/v3", "wp/v2"],
+    "gap_fillers": ["lms_enrollment_transfer"],
+    "notes": "Steps 1-5 and 8 use core WC/WP REST. Step 6 (LMS) varies by plugin and may need a gap-filler primitive or the LMS's own REST namespace — resolve from the site manifest."
+  },
+  "inputs": {
+    "master_id": "customer to keep",
+    "duplicate_id": "customer to absorb and delete",
+    "dry_run": true
+  },
+  "steps": [
+    {
+      "n": 1,
+      "action": "Identify both accounts",
+      "method": "GET /wc/v3/customers/{id}  (and /wp/v2/users/{id})",
+      "mutating": false
+    },
+    {
+      "n": 2,
+      "action": "Confirm master selection with operator",
+      "method": "present both; operator picks master",
+      "mutating": false
+    },
+    {
+      "n": 3,
+      "action": "List duplicate's orders (checkpoint these IDs)",
+      "method": "GET /wc/v3/orders?customer={duplicate_id}",
+      "mutating": false
+    },
+    {
+      "n": 4,
+      "action": "Reassign each order to master",
+      "method": "PUT /wc/v3/orders/{order_id} { customer_id: master_id }",
+      "mutating": true
+    },
+    {
+      "n": 5,
+      "action": "Reassign subscriptions",
+      "method": "GET /wc/v3/subscriptions?customer={duplicate_id} -> PUT { customer_id: master_id }",
+      "mutating": true
+    },
+    {
+      "n": 6,
+      "action": "Transfer course / LMS access (GAP — varies by LMS)",
+      "method": "LMS REST namespace from manifest, or lms_enrollment_transfer gap-filler",
+      "mutating": true
+    },
+    {
+      "n": 7,
+      "action": "Verify access and orders now resolve under master",
+      "method": "re-query orders, subscriptions, enrollments for master_id",
+      "mutating": false
+    },
+    {
+      "n": 8,
+      "action": "Delete the empty duplicate user",
+      "method": "DELETE /wp/v2/users/{duplicate_id}?reassign={master_id}&force=true",
+      "mutating": true
+    }
+  ],
+  "rollback": "No cross-call transaction. Checkpoint at step 3 records original order/subscription/enrollment ownership. On failure, STOP and report; re-run is safe because each set-customer_id step is idempotent. Operator may restore from backup if needed."
+}
