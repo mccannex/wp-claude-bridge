@@ -1,9 +1,7 @@
 <?php
 /**
  * Plugin Name: Claude Bridge
- * Description: Optional server-side deep layer for wp-claude-bridge. Exposes a one-call
- *              site context endpoint and read-only introspection routes. Auth rides the
- *              logged-in admin session via the standard WP REST nonce.
+ * Description: Server-side deep layer for wp-claude-bridge. REST endpoints for site context, snippet management, hook/scheduler introspection, and DB schema.
  * Version:     0.1.0
  * GitHub Plugin URI: mccannex/wp-claude-bridge
  * Primary Branch:    main
