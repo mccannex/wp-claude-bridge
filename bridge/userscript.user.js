@@ -93,13 +93,13 @@
     const sha = await resolveSha();
     const manifest = JSON.parse(await getFile(sha, 'manifest.json'));
 
-    // Pull the pieces we need to operate. Walker + base prompt for now.
-    const [walkerSrc, basePrompt] = await Promise.all([
+    const [walkerSrc, facadesSrc, basePrompt] = await Promise.all([
       getFile(sha, manifest.payload.walker),
+      getFile(sha, manifest.payload.facades),
       getFile(sha, manifest.instructions),
     ]);
 
-    return { sha, manifest, walkerSrc, basePrompt };
+    return { sha, manifest, walkerSrc, facadesSrc, basePrompt };
   }
 
   // --- 3. WALKER --------------------------------------------------------------
@@ -126,13 +126,15 @@
   // --- 6. ASSEMBLE ------------------------------------------------------------
   async function assemble() {
     const auth = bootstrapAuth();
-    const { sha, manifest, walkerSrc, basePrompt } = await fetchPayload();
+    const { sha, manifest, walkerSrc, facadesSrc, basePrompt } = await fetchPayload();
     const libraries = runWalker(walkerSrc);
     const server = await probePlugin(auth);
 
     window.__claude = window.__claude || {};
     window.__claude.auth = auth;
     window.__claude.rest = auth.rest;
+    // eslint-disable-next-line no-eval
+    (0, eval)(facadesSrc);
     window.__claude.manifest = {
       bridgeVersion: '0.2.0',
       pinnedSha: sha,
