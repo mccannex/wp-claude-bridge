@@ -3,6 +3,7 @@
 // @namespace    https://github.com/mccannex/wp-claude-bridge
 // @version      0.2.0
 // @description  Thin client-side shell. Bootstraps auth, discovers loaded libraries, fetches payload from the repo, and exposes window.__claude.manifest.
+// @author       mccannex
 // @match        *://*/wp-admin/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
