@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Claude Bridge
  * Description: Server-side deep layer for wp-claude-bridge. REST endpoints for site context, snippet management, hook/scheduler introspection, and DB schema.
- * Version:     2026.06.17
+ * Version:     2026.06.17.1
  * GitHub Plugin URI: https://github.com/mccannex/wp-claude-bridge
  * Primary Branch:    main
  * Release Asset:     true
@@ -163,77 +163,32 @@ MD
 );
 
 function claude_bridge_instructions() {
-    $ctx  = claude_bridge_context()->get_data();
-    $site = $ctx['site'];
-    $md   = CLAUDE_BRIDGE_BASE_DOCTRINE;
+    $ctx = claude_bridge_context()->get_data();
 
-    // ---- Site ----
-    $md .= "\n---\n\n## Site\n\n";
-    $md .= "- **Name:** {$site['name']}\n";
-    $md .= "- **URL:** {$site['url']}\n";
-    $md .= "- **WP version:** {$site['wp_version']}\n";
-    $md .= "- **Timezone:** {$site['timezone']}\n";
-    $md .= "- **REST root:** {$site['url']}/wp-json/\n";
-
-    // ---- Active plugins (summary) ----
-    $plugin_names = array_column( $ctx['plugins'], 'name' );
-    $md .= "\n## Active plugins\n\n" . implode( ', ', $plugin_names ) . "\n";
-
-    // ---- WooCommerce ----
-    if ( $ctx['woocommerce'] ) {
-        $wc = $ctx['woocommerce'];
-        $md .= "\n## WooCommerce\n\n";
-        $md .= "- Version: {$wc['version']}, currency: {$wc['currency']}\n";
-        $md .= "- Order statuses: " . implode( ', ', array_keys( $wc['order_statuses'] ) ) . "\n";
-        $md .= "- Payment gateways: " . implode( ', ', $wc['payment_gateways'] ) . "\n";
-    }
-
-    // ---- Snippet plugins ----
-    $snip = $ctx['snippets'];
-    $md  .= "\n## Snippet plugins\n\n";
-    foreach ( $snip as $slug => $info ) {
-        $status = $info['active'] ? "active v{$info['version']}" : 'not active';
-        $md    .= "- **{$slug}:** {$status}\n";
-    }
-    if ( $snip['wpcode']['active'] || $snip['code-snippets']['active'] ) {
-        $md .= "\nSnippet endpoints available at `claude-bridge/v1/snippets`.\n";
-    }
-
-    // ---- ACF ----
-    if ( ! empty( $ctx['acf'] ) ) {
-        $md .= "\n## ACF field groups\n\n";
-        foreach ( $ctx['acf'] as $group ) {
-            $field_names = array_column( $group['fields'], 'name' );
-            $md .= "- **{$group['title']}** (" . implode( ', ', $field_names ) . ")\n";
-        }
-    }
-
-    // ---- LMS ----
-    if ( $ctx['lms'] ) {
-        $md .= "\n## LMS\n\n- Plugin: {$ctx['lms']['plugin']} v{$ctx['lms']['version']}\n";
-    }
-
-    // ---- Claude Bridge endpoints ----
-    $md .= "\n## Claude Bridge endpoints (`/wp-json/claude-bridge/v1/`)\n\n";
-    $md .= "| Method | Path | Purpose |\n|---|---|---|\n";
-    $md .= "| GET | `/instructions` | This document |\n";
-    $md .= "| GET | `/context` | Full structured site snapshot |\n";
-    $md .= "| GET | `/snippets` | List all snippets (both plugins) |\n";
-    $md .= "| GET/PUT/DELETE | `/snippets/{plugin}/{id}` | Read, update, delete a snippet |\n";
-    $md .= "| POST | `/snippets/{plugin}` | Create a snippet |\n";
-    $md .= "| POST | `/snippets/{plugin}/{id}/toggle` | Enable / disable |\n";
-    $md .= "| POST | `/snippets/code-snippets/{id}/migrate` | Migrate to WP Code Pro |\n";
-    $md .= "| GET | `/introspect/hooks` | All registered WP hooks |\n";
-    $md .= "| GET | `/introspect/scheduler` | Action Scheduler / wp-cron jobs |\n";
-    $md .= "| GET | `/introspect/schema/{table}` | DB table column definitions |\n";
-
-    // ---- Available REST namespaces ----
-    $md .= "\n## Other REST namespaces on this site\n\n";
-    foreach ( $ctx['rest_roots'] as $ns ) {
-        $md .= "- `{$ns}`\n";
-    }
-
-    return new WP_REST_Response( $md, 200, [ 'Content-Type' => 'text/markdown; charset=utf-8' ] );
+    return rest_ensure_response( [
+        'doctrine' => CLAUDE_BRIDGE_BASE_DOCTRINE,
+        'site'     => $ctx['site'],
+        'plugins'  => array_column( $ctx['plugins'], 'version', 'name' ),
+        'woocommerce' => $ctx['woocommerce'],
+        'snippets'    => $ctx['snippets'],
+        'acf'         => $ctx['acf'],
+        'lms'         => $ctx['lms'],
+        'bridge_endpoints' => [
+            [ 'method' => 'GET',            'path' => '/claude-bridge/v1/instructions',                  'purpose' => 'This document' ],
+            [ 'method' => 'GET',            'path' => '/claude-bridge/v1/context',                       'purpose' => 'Full structured site snapshot' ],
+            [ 'method' => 'GET',            'path' => '/claude-bridge/v1/snippets',                      'purpose' => 'List all snippets (?plugin=wpcode|code-snippets to filter)' ],
+            [ 'method' => 'GET',            'path' => '/claude-bridge/v1/snippets/{plugin}/{id}',        'purpose' => 'Get one snippet' ],
+            [ 'method' => 'POST',           'path' => '/claude-bridge/v1/snippets/{plugin}',             'purpose' => 'Create a snippet' ],
+            [ 'method' => 'PUT',            'path' => '/claude-bridge/v1/snippets/{plugin}/{id}',        'purpose' => 'Update a snippet' ],
+            [ 'method' => 'DELETE',         'path' => '/claude-bridge/v1/snippets/{plugin}/{id}',        'purpose' => 'Delete a snippet' ],
+            [ 'method' => 'POST',           'path' => '/claude-bridge/v1/snippets/{plugin}/{id}/toggle', 'purpose' => 'Enable / disable a snippet' ],
+            [ 'method' => 'POST',           'path' => '/claude-bridge/v1/snippets/code-snippets/{id}/migrate', 'purpose' => 'Migrate snippet to WP Code Pro' ],
+            [ 'method' => 'GET',            'path' => '/claude-bridge/v1/introspect/hooks',              'purpose' => 'All registered WP hooks' ],
+            [ 'method' => 'GET',            'path' => '/claude-bridge/v1/introspect/scheduler',          'purpose' => 'Action Scheduler / wp-cron jobs' ],
+            [ 'method' => 'GET',            'path' => '/claude-bridge/v1/introspect/schema/{table}',     'purpose' => 'DB table column definitions' ],
+        ],
+        'rest_namespaces' => $ctx['rest_roots'],
+    ] );
 }
 
 // =============================================================================
