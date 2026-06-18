@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Claude Bridge
  * Description: Server-side deep layer for wp-claude-bridge. REST endpoints for site context, snippet management, hook/scheduler introspection, and DB schema.
- * Version:     0.1.0
+ * Version:     2026.06.17
  * GitHub Plugin URI: https://github.com/mccannex/wp-claude-bridge
  * Primary Branch:    main
  * Release Asset:     true
