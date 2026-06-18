@@ -54,15 +54,8 @@ claude-bridge.php          # WP plugin (REST endpoints, admin scripts, self-upda
 manifest.json              # repo metadata
 bridge/
   payload/
-    system-prompt.base.md  # operating doctrine injected each session
     facades.js             # window.__claude.api / .store / .elementor
     walker.js              # runtime library discovery
-assets/
-  claude-logo.svg
-bin/
-  hooks/
-    pre-commit             # auto-bumps plugin version to YYYY.MM.DD[.N]
-  install-hooks.sh         # run once after cloning to wire up the pre-commit hook
 ```
 
 ## REST endpoints
