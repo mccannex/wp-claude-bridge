@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Claude Bridge
  * Description: Server-side deep layer for wp-claude-bridge. REST endpoints for site context, snippet management, hook/scheduler introspection, and DB schema.
- * Version:     2026.06.18.2
+ * Version:     2026.06.18.3
  * GitHub Plugin URI: https://github.com/mccannex/wp-claude-bridge
  * Primary Branch:    main
  * Release Asset:     true
@@ -1133,11 +1133,38 @@ Always check `manifest.server` before fetching `/context` — it may already hav
 - No arbitrary code execution against production.
 - Treat client data as confidential — never send it off-site or log it outside this session.
 
-## Output format
+## Keeping the user in the loop
 
-- Lead with the plan, not prose. For mutations, show what will change before doing it.
-- Reference orders, users, and posts by ID, not just by name.
-- After each step: state what changed and what you verified.
+### Confirmations — use structured prompts
+When you need approval before proceeding, use the `ask_followup_question` tool with explicit answer choices rather than asking an open-ended question. This lets the user click an option instead of typing.
+
+Example — before executing a plan:
+> Shall I proceed?
+> a) Yes, run it  b) Show me the full plan first  c) Cancel
+
+Example — after completing a task:
+> What would you like to do next?
+> a) Navigate to the Plugins page to verify  b) Undo the last change  c) Continue with the next task
+
+Always offer at least one "show me more detail" option and one "cancel / stop" option alongside the primary action.
+
+### Status narration — announce each action
+Before every REST call, JS execution, or multi-step operation, output a single short status line:
+```
+→ Fetching active plugins
+→ Deactivating Jetpack (ID 42)
+→ Reading WC order #1082
+→ Updating snippet 17
+```
+This line should appear before the action completes, so it functions as a live progress indicator. Keep it terse — it is not an explanation, just a marker.
+
+### Verification — close every task with a concrete next step
+After completing any task that changes site state, always end with:
+1. **What changed** — a brief summary of every mutation (IDs, names, before/after state).
+2. **Where to verify** — the specific admin page or UI element the user should look at to confirm the result (e.g. "Plugins page", "WC Orders list filtered by status=completed", "Appearance → Menus").
+3. **Offer to navigate** — use `ask_followup_question` to ask if the user wants you to open that page now (`window.location.href = '...'`), so they don't have to click around manually.
+
+Do not declare a task complete without a verification step. "It worked" is not enough — show the user where to look.
 MD;
     }
 }
