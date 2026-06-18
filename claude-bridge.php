@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Claude Bridge
  * Description: Server-side deep layer for wp-claude-bridge. REST endpoints for site context, snippet management, hook/scheduler introspection, and DB schema.
- * Version:     2026.06.17.17
+ * Version:     2026.06.17.19
  * GitHub Plugin URI: https://github.com/mccannex/wp-claude-bridge
  * Primary Branch:    main
  * Release Asset:     true
@@ -56,11 +56,13 @@ class Claude_Bridge {
         add_action( 'admin_bar_menu',        [ $this, 'admin_bar_menu' ], 100 );
         add_action( 'admin_footer',          [ $this, 'admin_footer' ] );
         add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_scripts' ] );
-        add_action( 'admin_notices',         [ $this, 'update_notice' ] );
+        add_action( 'admin_notices',         [ $this, 'admin_notices' ] );
         add_filter( 'pre_set_site_transient_update_plugins', [ $this, 'inject_update' ] );
         add_filter( 'plugins_api',           [ $this, 'plugins_api' ], 10, 3 );
         add_action( 'wp_ajax_claude_bridge_check_update', [ $this, 'ajax_check_update' ] );
         add_action( 'wp_ajax_claude_bridge_run_update',   [ $this, 'ajax_run_update' ] );
+        add_filter( 'code_snippets/list_table/row_actions', [ $this, 'cs_row_action_migrate' ], 10, 2 );
+        add_action( 'admin_post_claude_bridge_migrate_snippet', [ $this, 'handle_migrate_snippet' ] );
     }
 
     // =========================================================================
@@ -395,14 +397,27 @@ class Claude_Bridge {
         wp_send_json_success( [ 'message' => "Updated to v{$remote} — reloading…", 'reload' => true ] );
     }
 
-    public function update_notice(): void {
+    public function admin_notices(): void {
+        if ( ! current_user_can( 'manage_options' ) ) { return; }
+
         $version = get_transient( 'claude_bridge_updated' );
-        if ( ! $version || ! current_user_can( 'manage_options' ) ) { return; }
-        delete_transient( 'claude_bridge_updated' );
-        printf(
-            '<div class="notice notice-success is-dismissible"><p><strong>Claude Bridge updated to v%s.</strong></p></div>',
-            esc_html( $version )
-        );
+        if ( $version ) {
+            delete_transient( 'claude_bridge_updated' );
+            printf(
+                '<div class="notice notice-success is-dismissible"><p><strong>Claude Bridge updated to v%s.</strong></p></div>',
+                esc_html( $version )
+            );
+        }
+
+        $notice = get_transient( 'claude_bridge_migration_notice' );
+        if ( $notice ) {
+            delete_transient( 'claude_bridge_migration_notice' );
+            printf(
+                '<div class="notice notice-%s is-dismissible"><p>%s</p></div>',
+                esc_attr( $notice['type'] ),
+                wp_kses( $notice['message'], [ 'a' => [ 'href' => [], 'target' => [] ], 'strong' => [] ] )
+            );
+        }
     }
 
     // =========================================================================
@@ -631,40 +646,118 @@ class Claude_Bridge {
     }
 
     public function rest_snippet_migrate( WP_REST_Request $req ): WP_REST_Response|WP_Error {
-        $id     = (int) $req['id'];
-        $body   = $req->get_json_params() ?: $req->get_body_params();
-        $delete = isset( $body['delete_source'] ) ? (bool) $body['delete_source'] : false;
+        $id = (int) $req['id'];
 
-        if ( ! $this->cs_active() )        { return $this->error_no_plugin( 'code-snippets' ); }
+        if ( ! $this->cs_active() )         { return $this->error_no_plugin( 'code-snippets' ); }
         if ( ! defined( 'WPCODE_VERSION' ) ) { return $this->error_no_plugin( 'wpcode' ); }
 
         $r = $this->cs_request( 'GET', "/snippets/{$id}" );
         if ( $r['status'] === 404 ) { return new WP_Error( 'not_found', 'Source snippet not found.', [ 'status' => 404 ] ); }
+
+        $result = $this->do_migrate_snippet( $id );
+        if ( is_wp_error( $result ) ) { return $result; }
+
+        return rest_ensure_response( $result );
+    }
+
+    // =========================================================================
+    // Admin — "Migrate to WPCode" row action + handler
+    // =========================================================================
+
+    public function cs_row_action_migrate( array $actions, $snippet ): array {
+        if ( ! defined( 'WPCODE_VERSION' ) ) { return $actions; }
+        $url = wp_nonce_url(
+            admin_url( 'admin-post.php?action=claude_bridge_migrate_snippet&snippet_id=' . (int) $snippet->id ),
+            'claude_bridge_migrate_' . (int) $snippet->id
+        );
+        $actions['migrate_to_wpcode'] = '<a href="' . esc_url( $url ) . '">Migrate to WPCode</a>';
+        return $actions;
+    }
+
+    public function handle_migrate_snippet(): void {
+        $id = isset( $_GET['snippet_id'] ) ? (int) $_GET['snippet_id'] : 0;
+        if ( ! $id || ! check_admin_referer( 'claude_bridge_migrate_' . $id ) || ! current_user_can( 'manage_options' ) ) {
+            wp_die( 'Unauthorized.', 403 );
+        }
+
+        $result = $this->do_migrate_snippet( $id );
+        $back   = admin_url( 'admin.php?page=snippets' );
+
+        if ( is_wp_error( $result ) ) {
+            set_transient( 'claude_bridge_migration_notice', [
+                'type'    => 'error',
+                'message' => 'Migration failed: ' . esc_html( $result->get_error_message() ),
+            ], 60 );
+        } else {
+            $edit_url = admin_url( 'admin.php?page=wpcode-snippet-manager&snippet_id=' . $result['wpcode_id'] );
+            $link     = '<a href="' . esc_url( $edit_url ) . '">Edit in WPCode &rarr;</a>';
+            set_transient( 'claude_bridge_migration_notice', [
+                'type'    => 'success',
+                'message' => 'Snippet <strong>' . esc_html( $result['title'] ) . '</strong> migrated to WPCode successfully. ' . $link,
+            ], 60 );
+        }
+
+        wp_safe_redirect( $back );
+        exit;
+    }
+
+    // =========================================================================
+    // Migration logic — shared by REST endpoint and admin button
+    // =========================================================================
+
+    private function do_migrate_snippet( int $id ): array|WP_Error {
+        $r = $this->cs_request( 'GET', "/snippets/{$id}" );
+        if ( $r['status'] === 404 ) { return new WP_Error( 'not_found', 'Source snippet not found.' ); }
+        if ( $r['status'] >= 400 )  { return new WP_Error( 'cs_error', 'Could not read source snippet.' ); }
         $source = $this->cs_format( $r['data'] );
 
+        $title    = $this->wpcode_unique_title( $source['title'] );
         $new_post = $this->wpcode_save( [
-            'title'       => $source['title'],
+            'title'       => $title,
             'code'        => $source['code'],
             'code_type'   => $source['code_type'],
-            'active'      => false,
+            'active'      => true,
             'description' => $source['description'],
             'tags'        => $source['tags'],
         ] );
-        if ( is_wp_error( $new_post ) ) { return $new_post; }
-
-        $result = [
-            'migrated'       => $this->wpcode_format( $new_post ),
-            'source_id'      => $id,
-            'delete_source'  => $delete,
-            'source_deleted' => false,
-        ];
-
-        if ( $delete ) {
-            $rd = $this->cs_request( 'DELETE', "/snippets/{$id}" );
-            $result['source_deleted'] = $rd['status'] < 400;
+        if ( is_wp_error( $new_post ) ) {
+            return new WP_Error( 'wpcode_create_failed', 'Could not create WPCode snippet: ' . $new_post->get_error_message() );
         }
 
-        return rest_ensure_response( $result );
+        update_post_meta( $new_post->ID, 'wpcode_auto_insert', '1' );
+        update_post_meta( $new_post->ID, 'wpcode_auto_insert_location', 'everywhere' );
+
+        if ( get_post_status( $new_post->ID ) !== 'publish' ) {
+            wp_delete_post( $new_post->ID, true );
+            return new WP_Error( 'wpcode_verify_failed', 'WPCode snippet created but activation failed — Code Snippets version left unchanged.' );
+        }
+
+        if ( function_exists( 'Code_Snippets\deactivate_snippet' ) ) {
+            \Code_Snippets\deactivate_snippet( $id );
+        } else {
+            $this->cs_request( 'PUT', "/snippets/{$id}", [ 'active' => false ] );
+        }
+
+        return [
+            'wpcode_id'  => $new_post->ID,
+            'title'      => $title,
+            'source_id'  => $id,
+            'migrated'   => $this->wpcode_format( $new_post ),
+        ];
+    }
+
+    private function wpcode_unique_title( string $title ): string {
+        global $wpdb;
+        $candidate = $title;
+        $suffix    = 2;
+        while ( (int) $wpdb->get_var( $wpdb->prepare(
+            "SELECT COUNT(*) FROM {$wpdb->posts} WHERE post_title = %s AND post_type = 'wpcode' AND post_status IN ('publish','draft')",
+            $candidate
+        ) ) > 0 ) {
+            $candidate = "{$title} ({$suffix})";
+            $suffix++;
+        }
+        return $candidate;
     }
 
     // =========================================================================
