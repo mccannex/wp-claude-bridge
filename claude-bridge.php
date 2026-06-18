@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Claude Bridge
  * Description: Server-side deep layer for wp-claude-bridge. REST endpoints for site context, snippet management, hook/scheduler introspection, and DB schema.
- * Version:     2026.06.18
+ * Version:     2026.06.18.1
  * GitHub Plugin URI: https://github.com/mccannex/wp-claude-bridge
  * Primary Branch:    main
  * Release Asset:     true
@@ -945,10 +945,20 @@ class Claude_Bridge {
     }
 
     private function wpcode_save( array $fields, int $id = 0 ): WP_Post|WP_Error {
+        global $wpdb;
+
+        $code      = $fields['code'] ?? '';
+        $code_type = $fields['code_type'] ?? 'php';
+
+        // WPCode auto-inserts <?php, so strip any opening tag from PHP snippets.
+        if ( 'php' === $code_type ) {
+            $code = preg_replace( '/^\s*<\?(php)?\s*/i', '', ltrim( $code ) );
+        }
+
         $postarr = [
             'post_type'    => 'wpcode',
             'post_title'   => sanitize_text_field( $fields['title'] ?? '' ),
-            'post_content' => $fields['code'] ?? '',
+            'post_content' => $code,
             'post_excerpt' => sanitize_textarea_field( $fields['description'] ?? '' ),
             'post_status'  => isset( $fields['active'] ) ? ( $fields['active'] ? 'publish' : 'draft' ) : 'draft',
         ];
@@ -957,8 +967,13 @@ class Claude_Bridge {
         $post_id = $id ? wp_update_post( $postarr, true ) : wp_insert_post( $postarr, true );
         if ( is_wp_error( $post_id ) ) { return $post_id; }
 
-        if ( ! empty( $fields['code_type'] ) ) {
-            wp_set_object_terms( $post_id, sanitize_key( $fields['code_type'] ), 'wpcode_type' );
+        // Write code directly to bypass content_save_pre filters (WP unslashing mangling
+        // backslash sequences like \n, and WPCode Pro's superglobal safety check).
+        $wpdb->update( $wpdb->posts, [ 'post_content' => $code ], [ 'ID' => $post_id ] );
+        clean_post_cache( $post_id );
+
+        if ( ! empty( $code_type ) ) {
+            wp_set_object_terms( $post_id, sanitize_key( $code_type ), 'wpcode_type' );
         }
         if ( isset( $fields['tags'] ) ) {
             wp_set_object_terms( $post_id, array_map( 'sanitize_text_field', (array) $fields['tags'] ), 'wpcode_tags' );
@@ -1089,6 +1104,11 @@ are available. Claude Bridge adds the following at `/wp-json/claude-bridge/v1/`:
 
 **Snippet fields** (used for create and update): `title`, `code`, `code_type` (`php`\|`html`\|`css`\|`js`), `active` (bool), `description`, `tags` (array of strings).
 `{plugin}` must be `wpcode` or `code-snippets` — check `manifest.server.snippets` to see which are active.
+
+**WPCode conventions:**
+- PUT is a full replace — always include all fields or they will be cleared.
+- Never include `<?php` in PHP snippet code sent to WPCode; it auto-inserts the opening tag.
+- Snippets containing superglobals (`$_GET`, `$_POST`, etc.) are saved correctly via the bridge (it bypasses WPCode Pro's content filters), but verify the saved code after writing.
 
 ## When to use what
 
