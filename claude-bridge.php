@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Claude Bridge
  * Description: Server-side deep layer for wp-claude-bridge. REST endpoints for site context, snippet management, hook/scheduler introspection, and DB schema.
- * Version:     2026.06.17.14
+ * Version:     2026.06.17.15
  * GitHub Plugin URI: https://github.com/mccannex/wp-claude-bridge
  * Primary Branch:    main
  * Release Asset:     true
@@ -265,8 +265,8 @@ add_action( 'admin_enqueue_scripts', function () {
     $base = plugin_dir_url( __FILE__ );
     $ver  = CLAUDE_BRIDGE_VERSION;
 
-    wp_register_script( 'claude-bridge-walker',  $base . 'bridge/payload/walker.js',  [],                       $ver, true );
-    wp_register_script( 'claude-bridge-facades', $base . 'bridge/payload/facades.js', ['claude-bridge-walker'],  $ver, true );
+    wp_register_script( 'claude-bridge-walker',  $base . 'assets/walker.js',  [],                       $ver, true );
+    wp_register_script( 'claude-bridge-facades', $base . 'assets/facades.js', ['claude-bridge-walker'],  $ver, true );
     wp_enqueue_script( 'claude-bridge-facades' );
 
     // Pass REST credentials + server context to page JS safely.

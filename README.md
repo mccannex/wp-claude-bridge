@@ -52,10 +52,9 @@ After an update the page reloads automatically.
 ```
 claude-bridge.php          # WP plugin (REST endpoints, admin scripts, self-updater)
 manifest.json              # repo metadata
-bridge/
-  payload/
-    facades.js             # window.__claude.api / .store / .elementor
-    walker.js              # runtime library discovery
+assets/
+  facades.js               # window.__claude.api / .store / .elementor
+  walker.js                # runtime library discovery
 ```
 
 ## REST endpoints
