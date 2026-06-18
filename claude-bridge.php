@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Claude Bridge
  * Description: Server-side deep layer for wp-claude-bridge. REST endpoints for site context, snippet management, hook/scheduler introspection, and DB schema.
- * Version:     2026.06.17.19
+ * Version:     2026.06.18
  * GitHub Plugin URI: https://github.com/mccannex/wp-claude-bridge
  * Primary Branch:    main
  * Release Asset:     true
@@ -724,8 +724,8 @@ class Claude_Bridge {
             return new WP_Error( 'wpcode_create_failed', 'Could not create WPCode snippet: ' . $new_post->get_error_message() );
         }
 
-        update_post_meta( $new_post->ID, 'wpcode_auto_insert', '1' );
-        update_post_meta( $new_post->ID, 'wpcode_auto_insert_location', 'everywhere' );
+        update_post_meta( $new_post->ID, '_wpcode_auto_insert', 1 );
+        wp_set_post_terms( $new_post->ID, 'everywhere', 'wpcode_location' );
 
         if ( get_post_status( $new_post->ID ) !== 'publish' ) {
             wp_delete_post( $new_post->ID, true );
