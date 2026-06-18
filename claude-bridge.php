@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Claude Bridge
  * Description: Server-side deep layer for wp-claude-bridge. REST endpoints for site context, snippet management, hook/scheduler introspection, and DB schema.
- * Version:     2026.06.17.3
+ * Version:     2026.06.17.4
  * GitHub Plugin URI: https://github.com/mccannex/wp-claude-bridge
  * Primary Branch:    main
  * Release Asset:     true
@@ -22,6 +22,12 @@
  *   GET    claude-bridge/v1/introspect/schema/{table}
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
+
+define( 'CLAUDE_BRIDGE_REPO',        'mccannex/wp-claude-bridge' );
+define( 'CLAUDE_BRIDGE_BRANCH',      'main' );
+define( 'CLAUDE_BRIDGE_PLUGIN_FILE', plugin_basename( __FILE__ ) );
+// Read version from own header so the pre-commit bump is the single source of truth.
+define( 'CLAUDE_BRIDGE_VERSION', get_file_data( __FILE__, [ 'Version' => 'Version' ] )['Version'] );
 
 add_action( 'rest_api_init', function () {
 
@@ -131,7 +137,6 @@ add_action( 'admin_bar_menu', function ( WP_Admin_Bar $bar ) {
         'id'    => 'claude-bridge',
         'title' => '⬡ Claude Bridge',
         'href'  => '#',
-        'meta'  => [ 'title' => 'Copy session prompt to clipboard' ],
     ] );
     $bar->add_node( [
         'parent' => 'claude-bridge',
@@ -139,6 +144,20 @@ add_action( 'admin_bar_menu', function ( WP_Admin_Bar $bar ) {
         'title'  => 'Copy session prompt',
         'href'   => '#',
         'meta'   => [ 'onclick' => 'claudeBridgeCopyPrompt(event)' ],
+    ] );
+    $bar->add_node( [
+        'parent' => 'claude-bridge',
+        'id'     => 'claude-bridge-check',
+        'title'  => 'Check for updates',
+        'href'   => '#',
+        'meta'   => [ 'onclick' => 'claudeBridgeCheckUpdate(event)' ],
+    ] );
+    $bar->add_node( [
+        'parent' => 'claude-bridge',
+        'id'     => 'claude-bridge-update',
+        'title'  => 'Update now',
+        'href'   => '#',
+        'meta'   => [ 'onclick' => 'claudeBridgeRunUpdate(event)' ],
     ] );
 }, 100 );
 
@@ -203,8 +222,165 @@ add_action( 'admin_footer', function () {
             console.error('[claude-bridge] copy failed:', err);
         }
     }
+
+    async function claudeBridgeAjax(action, label, workingText) {
+        const original = label ? label.textContent : '';
+        if (label) label.textContent = workingText;
+        const body = new URLSearchParams({
+            action,
+            _ajax_nonce: <?php echo wp_json_encode( wp_create_nonce( 'claude_bridge_update' ) ); ?>,
+        });
+        try {
+            const res  = await fetch(<?php echo wp_json_encode( admin_url( 'admin-ajax.php' ) ); ?>, { method: 'POST', body });
+            const data = await res.json();
+            if (label) {
+                label.textContent = data.message || (data.success ? 'Done' : 'Failed');
+                setTimeout(() => label.textContent = original, 4000);
+            }
+            return data;
+        } catch(err) {
+            if (label) { label.textContent = 'Error — see console'; setTimeout(() => label.textContent = original, 4000); }
+            console.error('[claude-bridge]', err);
+        }
+    }
+
+    async function claudeBridgeCheckUpdate(e) {
+        e.preventDefault();
+        const node  = document.getElementById('wp-admin-bar-claude-bridge-check');
+        const label = node ? node.querySelector('.ab-item') : null;
+        await claudeBridgeAjax('claude_bridge_check_update', label, 'Checking…');
+    }
+
+    async function claudeBridgeRunUpdate(e) {
+        e.preventDefault();
+        const node  = document.getElementById('wp-admin-bar-claude-bridge-update');
+        const label = node ? node.querySelector('.ab-item') : null;
+        const result = await claudeBridgeAjax('claude_bridge_run_update', label, 'Updating…');
+        if (result && result.success) {
+            setTimeout(() => location.reload(), 1500);
+        }
+    }
     </script>
     <?php
+} );
+
+// =============================================================================
+// Self-updater — replaces Git Updater dependency
+// =============================================================================
+
+function claude_bridge_fetch_remote_version( bool $force = false ): ?string {
+    $transient_key = 'claude_bridge_remote_version';
+    if ( ! $force ) {
+        $cached = get_transient( $transient_key );
+        if ( $cached ) { return $cached; }
+    }
+
+    $url = "https://raw.githubusercontent.com/" . CLAUDE_BRIDGE_REPO . "/" . CLAUDE_BRIDGE_BRANCH . "/claude-bridge.php";
+    $res = wp_remote_get( $url, [ 'timeout' => 8 ] );
+
+    if ( is_wp_error( $res ) || wp_remote_retrieve_response_code( $res ) !== 200 ) {
+        return null;
+    }
+
+    // Parse Version: header from the raw PHP file.
+    preg_match( '/^\s*\*\s*Version:\s*(.+)$/m', wp_remote_retrieve_body( $res ), $m );
+    $version = isset( $m[1] ) ? trim( $m[1] ) : null;
+
+    if ( $version ) {
+        set_transient( $transient_key, $version, HOUR_IN_SECONDS );
+    }
+    return $version;
+}
+
+// Inject into WP's passive update check.
+add_filter( 'pre_set_site_transient_update_plugins', function ( $transient ) {
+    if ( empty( $transient->checked ) ) { return $transient; }
+
+    $remote = claude_bridge_fetch_remote_version();
+    if ( $remote && version_compare( $remote, CLAUDE_BRIDGE_VERSION, '>' ) ) {
+        $transient->response[ CLAUDE_BRIDGE_PLUGIN_FILE ] = (object) [
+            'slug'        => dirname( CLAUDE_BRIDGE_PLUGIN_FILE ),
+            'plugin'      => CLAUDE_BRIDGE_PLUGIN_FILE,
+            'new_version' => $remote,
+            'package'     => "https://github.com/" . CLAUDE_BRIDGE_REPO . "/archive/refs/heads/" . CLAUDE_BRIDGE_BRANCH . ".zip",
+            'url'         => "https://github.com/" . CLAUDE_BRIDGE_REPO,
+        ];
+    }
+    return $transient;
+} );
+
+// Rename the extracted folder from {repo}-{branch}/ to the installed plugin slug.
+add_filter( 'upgrader_source_selection', function ( $source, $remote_source, $upgrader ) {
+    global $wp_filesystem;
+    if ( ! isset( $upgrader->skin->plugin ) || $upgrader->skin->plugin !== CLAUDE_BRIDGE_PLUGIN_FILE ) {
+        return $source;
+    }
+    $desired = trailingslashit( $remote_source ) . dirname( CLAUDE_BRIDGE_PLUGIN_FILE ) . '/';
+    if ( $source !== $desired ) {
+        $wp_filesystem->move( $source, $desired );
+        return $desired;
+    }
+    return $source;
+}, 10, 3 );
+
+// Populate the "View details" plugin info popup.
+add_filter( 'plugins_api', function ( $result, $action, $args ) {
+    if ( $action !== 'plugin_information' || $args->slug !== dirname( CLAUDE_BRIDGE_PLUGIN_FILE ) ) {
+        return $result;
+    }
+    return (object) [
+        'name'     => 'Claude Bridge',
+        'slug'     => dirname( CLAUDE_BRIDGE_PLUGIN_FILE ),
+        'version'  => claude_bridge_fetch_remote_version() ?? CLAUDE_BRIDGE_VERSION,
+        'homepage' => "https://github.com/" . CLAUDE_BRIDGE_REPO,
+        'sections' => [ 'description' => 'Server-side deep layer for wp-claude-bridge.' ],
+    ];
+}, 10, 3 );
+
+// =============================================================================
+// AJAX — manual update check + force update
+// =============================================================================
+
+add_action( 'wp_ajax_claude_bridge_check_update', function () {
+    check_ajax_referer( 'claude_bridge_update' );
+    if ( ! current_user_can( 'manage_options' ) ) { wp_send_json_error( [ 'message' => 'Unauthorized' ] ); }
+
+    $remote = claude_bridge_fetch_remote_version( force: true );
+    if ( ! $remote ) {
+        wp_send_json_error( [ 'message' => 'Could not reach GitHub' ] );
+    }
+    if ( version_compare( $remote, CLAUDE_BRIDGE_VERSION, '>' ) ) {
+        wp_send_json_success( [ 'message' => "v{$remote} available" ] );
+    } else {
+        wp_send_json_success( [ 'message' => 'Up to date' ] );
+    }
+} );
+
+add_action( 'wp_ajax_claude_bridge_run_update', function () {
+    check_ajax_referer( 'claude_bridge_update' );
+    if ( ! current_user_can( 'update_plugins' ) ) { wp_send_json_error( [ 'message' => 'Unauthorized' ] ); }
+
+    require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
+    require_once ABSPATH . 'wp-admin/includes/class-wp-ajax-upgrader-skin.php';
+
+    $remote = claude_bridge_fetch_remote_version( force: true );
+    if ( ! $remote ) {
+        wp_send_json_error( [ 'message' => 'Could not reach GitHub' ] );
+    }
+
+    $package  = "https://github.com/" . CLAUDE_BRIDGE_REPO . "/archive/refs/heads/" . CLAUDE_BRIDGE_BRANCH . ".zip";
+    $skin     = new WP_Ajax_Upgrader_Skin();
+    $upgrader = new Plugin_Upgrader( $skin );
+    $result   = $upgrader->install( $package, [ 'overwrite_package' => true ] );
+
+    if ( is_wp_error( $result ) ) {
+        wp_send_json_error( [ 'message' => $result->get_error_message() ] );
+    }
+    if ( $skin->get_errors()->has_errors() ) {
+        wp_send_json_error( [ 'message' => $skin->get_error_messages() ] );
+    }
+
+    wp_send_json_success( [ 'message' => "Updated to v{$remote} — reloading…" ] );
 } );
 
 // =============================================================================
