@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Claude Bridge
  * Description: Server-side deep layer for wp-claude-bridge. REST endpoints for site context, snippet management, hook/scheduler introspection, and DB schema.
- * Version:     2026.06.17.15
+ * Version:     2026.06.17.16
  * GitHub Plugin URI: https://github.com/mccannex/wp-claude-bridge
  * Primary Branch:    main
  * Release Asset:     true
@@ -128,7 +128,7 @@ add_action( 'rest_api_init', function () {
 } );
 
 // =============================================================================
-// Admin toolbar button — fetches /instructions and copies to clipboard
+// Admin toolbar — session prompt clipboard + manual update controls
 // =============================================================================
 
 add_action( 'admin_bar_menu', function ( WP_Admin_Bar $bar ) {
@@ -275,12 +275,10 @@ add_action( 'admin_enqueue_scripts', function () {
         'nonce'    => wp_create_nonce( 'wp_rest' ),
         'version'  => CLAUDE_BRIDGE_VERSION,
         'server'   => [
-            'version'     => CLAUDE_BRIDGE_VERSION,
             'site'        => claude_bridge_site_info(),
             'plugins'     => claude_bridge_active_plugins(),
             'woocommerce' => claude_bridge_woocommerce(),
             'snippets'    => claude_bridge_snippet_plugins_info(),
-            'is_admin'    => current_user_can( 'manage_options' ),
         ],
     ] );
 
@@ -545,16 +543,14 @@ MD
 );
 
 function claude_bridge_instructions() {
-    $ctx = claude_bridge_context()->get_data();
-
     return rest_ensure_response( [
         'doctrine'    => CLAUDE_BRIDGE_BASE_DOCTRINE,
-        'site'        => $ctx['site'],
-        'plugins'     => array_column( $ctx['plugins'], 'version', 'name' ),
-        'woocommerce' => $ctx['woocommerce'],
-        'snippets'    => $ctx['snippets'],
-        'acf'         => $ctx['acf'],
-        'lms'         => $ctx['lms'],
+        'site'        => claude_bridge_site_info(),
+        'plugins'     => array_column( claude_bridge_active_plugins(), 'version', 'name' ),
+        'woocommerce' => claude_bridge_woocommerce(),
+        'snippets'    => claude_bridge_snippet_plugins_info(),
+        'acf'         => claude_bridge_acf(),
+        'lms'         => claude_bridge_lms(),
         'bridge_endpoints' => [
             [ 'method' => 'GET',            'path' => '/claude-bridge/v1/instructions',                  'purpose' => 'This document' ],
             [ 'method' => 'GET',            'path' => '/claude-bridge/v1/context',                       'purpose' => 'Full structured site snapshot' ],
