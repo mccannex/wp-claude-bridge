@@ -1,65 +1,87 @@
 # wp-claude-bridge
 
-A toolkit for AI-assisted WordPress / WooCommerce client work. It lets Claude (via
-the Chrome extension) talk to a WordPress site through its existing JS libraries and
-REST API instead of clicking through the slow admin UI.
+A WordPress plugin that lets Claude (via the Chrome extension) drive a logged-in WP admin session through the site's existing REST API and JS libraries — instead of clicking through the slow admin UI.
 
-This is the **public** repo: shells, recipes, primitives, and the base system prompt.
-Per-site overlays and any client-specific context live in the private
-`wp-claude-context` repo.
+## How it works
+
+Install the plugin on a WP site. On every admin page it:
+
+1. Enqueues `walker.js` — discovers what JS libraries are loaded (`wp`, `elementor`, `wcSettings`, etc.) and maps their API surface.
+2. Enqueues `facades.js` — exposes `window.__claude.api`, `window.__claude.store`, and `window.__claude.elementor` with a `dry_run` safety gate on all mutations.
+3. Bootstraps `window.__claude.rest` — a fetch wrapper pre-loaded with the WP REST nonce so REST calls work from the browser console.
+4. Assembles `window.__claude.manifest` — combines the above with server-side site context (plugins, WooCommerce state, snippet plugins, capabilities).
+
+Claude reads `window.__claude.manifest` as its first action, then drives the site through REST and JS.
 
 ## Design principles
 
-- **Latency, not complexity, is the problem.** The goal is to stop clicking through
-  the slow WP admin and instead drive the underlying system directly.
-- **Composition over bespoke code.** Operations are decomposed into sequences of
-  *existing* WP/WC REST calls Claude orchestrates. The plugin only fills genuine gaps.
-- **Fixed safe primitives only.** No arbitrary code execution against production.
-- **Plan → checkpoint → execute → verify → resumable.** Mutating operations default to
-  `dry_run` and return a plan for human approval. Steps are idempotent so a failed run
-  can be re-run.
-- **UI clicking is a fallback,** not the default.
+- **Latency, not complexity, is the problem.** Stop clicking through the WP admin UI; drive the underlying system directly.
+- **Composition over bespoke code.** Operations are sequences of existing WP/WC REST calls. The plugin only fills genuine gaps.
+- **No arbitrary code execution against production.**
+- **Plan → checkpoint → execute → verify → resumable.** Mutating operations default to `dry_run` and return a plan for human approval.
+- **UI clicking is a fallback**, not the default.
 
-## Three surfaces
+## Installation
 
-| Surface | Lives | Role |
-|---|---|---|
-| **Bridge** (`bridge/`) | Client-side, Tampermonkey | Access + discovery. Auth bootstrap, runtime library discovery, curated `window.__claude.*` facades, manifest assembly. Always present, zero-install. |
-| **Plugin** (`plugin/`) | Server-side PHP, optional | Server truth + gap-fillers. Deep introspection (hooks, ACF defs, DB schema), one-call site context endpoint, bounded action primitives. Installed only where wanted. |
-| **Recipes** (`recipes/`) | Repo, read by Claude | Decomposed step sequences against existing endpoints, plus the execution loop. |
+1. Download or clone this repo.
+2. Copy `claude-bridge.php` and the `bridge/` folder into your WP plugins directory as `wp-claude-bridge-main/`.
+3. Activate **Claude Bridge** in WP Admin → Plugins.
 
-The Bridge runs first on any site, probes for the Plugin's context endpoint, and merges
-runtime + server data into one `window.__claude.manifest` object that Claude reads as its
-first action.
+That's it — no Tampermonkey userscript, no other dependencies.
 
-## Distribution model
+## Updating
 
-- **Shells** (userscript, plugin PHP) change rarely → versioned self-update
-  (Tampermonkey `@version`/`@updateURL`; Git Updater for the plugin).
-- **Payload** (recipes, facades, prompts, context) changes constantly → fetched live
-  from this repo on each access. Push to `master` = live on next access, no reinstall.
-- A small `manifest.json` is fetched first; payload files are pulled by commit-pinned
-  URL to dodge CDN staleness.
+The plugin self-updates from this GitHub repo. In WP Admin:
+
+- The toolbar **Claude Bridge → Check for updates** button checks the current version against the repo.
+- **Update now** downloads and installs the latest `main` branch zip directly.
+- Standard WP plugin update notifications also appear in the Plugins list when a new version is available.
+
+After an update the page reloads automatically.
+
+## Session workflow
+
+1. Open any WP admin page on the target site.
+2. Open the Claude Chrome extension sidebar.
+3. Click **Claude Bridge → Copy session prompt** in the admin toolbar.
+4. Paste into the Claude conversation to bootstrap the session with site context and operating instructions.
+5. Claude can now call `window.__claude.*` helpers and REST endpoints directly.
 
 ## Repo layout
 
 ```
-claude-bridge.php          # WP plugin shell; self-updates via Git Updater
-manifest.json              # version + index of payload files
+claude-bridge.php          # WP plugin (REST endpoints, admin scripts, self-updater)
+manifest.json              # repo metadata
 bridge/
-  userscript.user.js       # thin shell, self-updates via @version
   payload/
-    system-prompt.base.md  # operating doctrine injected every session
-    facades.js             # curated window.__claude.* helpers
-    walker.js              # object-graph runtime discovery
-recipes/
-  merge-customers.json
-  purge-failed-orders.json
-shared/
-  primitives.json
+    system-prompt.base.md  # operating doctrine injected each session
+    facades.js             # window.__claude.api / .store / .elementor
+    walker.js              # runtime library discovery
+assets/
+  claude-logo.svg
+bin/
+  hooks/
+    pre-commit             # auto-bumps plugin version to YYYY.MM.DD[.N]
+  install-hooks.sh         # run once after cloning to wire up the pre-commit hook
 ```
 
-## Status
+## REST endpoints
 
-Design / scaffolding phase. Code surfaces are stubs; the architecture, base prompt, and
-the first recipe decomposition are real.
+All under `/wp-json/claude-bridge/v1/`. Require `manage_options` except `/instructions`.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/instructions` | Session bootstrap doc (public) |
+| GET | `/context` | Full structured site snapshot |
+| GET | `/snippets` | List all snippets (both snippet plugins) |
+| GET | `/snippets/{plugin}/{id}` | Get one snippet |
+| POST | `/snippets/{plugin}` | Create a snippet |
+| PUT | `/snippets/{plugin}/{id}` | Update a snippet |
+| DELETE | `/snippets/{plugin}/{id}` | Delete a snippet |
+| POST | `/snippets/{plugin}/{id}/toggle` | Enable / disable a snippet |
+| POST | `/snippets/code-snippets/{id}/migrate` | Migrate snippet → WP Code Pro |
+| GET | `/introspect/hooks` | All registered WP hooks |
+| GET | `/introspect/scheduler` | Action Scheduler / wp-cron jobs |
+| GET | `/introspect/schema/{table}` | DB table column definitions |
+
+Supported snippet plugins: **WP Code Pro** (`wpcode`) and **Code Snippets** (`code-snippets`).

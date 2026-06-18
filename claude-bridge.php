@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Claude Bridge
  * Description: Server-side deep layer for wp-claude-bridge. REST endpoints for site context, snippet management, hook/scheduler introspection, and DB schema.
- * Version:     2026.06.17.7
+ * Version:     2026.06.17.8
  * GitHub Plugin URI: https://github.com/mccannex/wp-claude-bridge
  * Primary Branch:    main
  * Release Asset:     true
@@ -164,60 +164,51 @@ add_action( 'admin_bar_menu', function ( WP_Admin_Bar $bar ) {
 
 add_action( 'admin_footer', function () {
     if ( ! current_user_can( 'manage_options' ) ) { return; }
-    $endpoint = rest_url( 'claude-bridge/v1/instructions' );
     ?>
     <script>
-    async function claudeBridgeCopyPrompt(e) {
+    function claudeBridgeCopyPrompt(e) {
         e.preventDefault();
-        const node = document.getElementById('wp-admin-bar-claude-bridge-copy');
+        const node  = document.getElementById('wp-admin-bar-claude-bridge-copy');
         const label = node ? node.querySelector('.ab-item') : null;
 
         try {
-            const res  = await fetch(<?php echo wp_json_encode( $endpoint ); ?>);
-            const d    = await res.json();
+            const m = window.__claude && window.__claude.manifest;
+            if (!m) { throw new Error('window.__claude.manifest not ready'); }
+            const s = m.server || {};
 
-            const wc = d.woocommerce
-                ? `WooCommerce ${d.woocommerce.version} (${d.woocommerce.currency}) — statuses: ${Object.keys(d.woocommerce.order_statuses).join(', ')}`
+            const wc = s.woocommerce
+                ? `WooCommerce ${s.woocommerce.version} (${s.woocommerce.currency}) — statuses: ${Object.keys(s.woocommerce.order_statuses || {}).join(', ')}`
                 : 'Not active';
 
-            const snippetLines = Object.entries(d.snippets || {})
+            const snippetLines = Object.entries(s.snippets || {})
                 .map(([k,v]) => `  ${k}: ${v.active ? 'active v'+v.version : 'not active'}`)
                 .join('\n');
 
-            const acfLines = (d.acf || [])
-                .map(g => `  ${g.title} (${(g.fields||[]).map(f=>f.name).join(', ')})`)
-                .join('\n');
-
-            const endpointLines = (d.bridge_endpoints || [])
-                .map(e => `  ${e.method.padEnd(7)} ${e.path}  — ${e.purpose}`)
-                .join('\n');
+            const pluginNames = (s.plugins || []).map(p => p.name).join(', ');
 
             const text = [
                 `I'm working on my WordPress site and I'd like your help with some tasks. Please follow these operating guidelines for this session:`,
                 '',
-                d.doctrine,
+                m.instructions,
                 '',
                 '---',
                 '',
-                `Site: ${d.site.name} (${d.site.url})`,
-                `WP version: ${d.site.wp_version} | Timezone: ${d.site.timezone}`,
-                `REST root: ${d.site.url}/wp-json/`,
+                `Site: ${s.site ? s.site.name + ' (' + s.site.url + ')' : location.origin}`,
+                `WP version: ${s.site ? s.site.wp_version : 'unknown'} | Timezone: ${s.site ? s.site.timezone : 'unknown'}`,
+                `REST root: ${m.restRoot}`,
                 '',
-                `Active plugins: ${Object.keys(d.plugins || {}).join(', ')}`,
+                `Active plugins: ${pluginNames}`,
                 '',
                 `WooCommerce: ${wc}`,
                 '',
                 `Snippet plugins:\n${snippetLines}`,
-                acfLines ? `\nACF field groups:\n${acfLines}` : '',
-                d.lms ? `\nLMS: ${d.lms.plugin} v${d.lms.version}` : '',
                 '',
-                `Claude Bridge endpoints (all at ${d.site.url}/wp-json/):\n${endpointLines}`,
-                '',
-                `Other REST namespaces: ${(d.rest_namespaces || []).join(', ')}`,
-            ].filter(l => l !== null).join('\n');
+                `Claude Bridge v${m.bridgeVersion} — endpoints at ${m.restRoot}claude-bridge/v1/`,
+            ].join('\n');
 
-            await navigator.clipboard.writeText(text);
-            if (label) { label.textContent = 'Copied!'; setTimeout(() => label.textContent = 'Copy session prompt', 2000); }
+            navigator.clipboard.writeText(text).then(() => {
+                if (label) { label.textContent = 'Copied!'; setTimeout(() => label.textContent = 'Copy session prompt', 2000); }
+            });
         } catch(err) {
             if (label) { label.textContent = 'Error — see console'; }
             console.error('[claude-bridge] copy failed:', err);
@@ -263,6 +254,80 @@ add_action( 'admin_footer', function () {
     }
     </script>
     <?php
+} );
+
+// =============================================================================
+// Admin scripts — enqueue walker + facades directly as WP scripts
+// =============================================================================
+
+add_action( 'admin_enqueue_scripts', function () {
+    if ( ! current_user_can( 'manage_options' ) ) { return; }
+
+    $base = plugin_dir_url( __FILE__ );
+    $ver  = CLAUDE_BRIDGE_VERSION;
+
+    wp_register_script( 'claude-bridge-walker',  $base . 'bridge/payload/walker.js',  [],                       $ver, true );
+    wp_register_script( 'claude-bridge-facades', $base . 'bridge/payload/facades.js', ['claude-bridge-walker'],  $ver, true );
+    wp_enqueue_script( 'claude-bridge-facades' );
+
+    // Pass REST credentials + server context to page JS safely.
+    wp_localize_script( 'claude-bridge-facades', 'wpClaudeBridge', [
+        'restRoot' => get_rest_url(),
+        'nonce'    => wp_create_nonce( 'wp_rest' ),
+        'version'  => CLAUDE_BRIDGE_VERSION,
+        'doctrine' => CLAUDE_BRIDGE_BASE_DOCTRINE,
+        'server'   => [
+            'version'      => CLAUDE_BRIDGE_VERSION,
+            'site'         => claude_bridge_site_info(),
+            'plugins'      => claude_bridge_active_plugins(),
+            'woocommerce'  => claude_bridge_woocommerce(),
+            'snippets'     => claude_bridge_snippet_plugins_info(),
+            'capabilities' => claude_bridge_current_caps(),
+        ],
+    ] );
+
+    // Bootstrap: defines window.__claude.rest before facades.js runs.
+    wp_add_inline_script( 'claude-bridge-facades', '
+(function () {
+  var cfg = window.wpClaudeBridge;
+  window.__claude       = window.__claude || {};
+  window.__claude._root  = cfg.restRoot;
+  window.__claude._nonce = cfg.nonce;
+  window.__claude.rest   = async function (path, opts) {
+    opts = opts || {};
+    var url     = cfg.restRoot.replace(/\/$/, "/") + path.replace(/^\//, "");
+    var headers = Object.assign(
+      { "Content-Type": "application/json" },
+      cfg.nonce ? { "X-WP-Nonce": cfg.nonce } : {},
+      opts.headers || {}
+    );
+    var res  = await fetch(url, Object.assign({ credentials: "same-origin" }, opts, { headers: headers }));
+    var body = await res.text();
+    try  { return { ok: res.ok, status: res.status, json: JSON.parse(body) }; }
+    catch (e) { return { ok: res.ok, status: res.status, text: body }; }
+  };
+})();
+', 'before' );
+
+    // Manifest: runs walker and assembles window.__claude.manifest after facades.js.
+    wp_add_inline_script( 'claude-bridge-facades', '
+(function () {
+  var cfg       = window.wpClaudeBridge;
+  var libraries = typeof window.__claudeWalker === "function" ? window.__claudeWalker() : {};
+  window.__claude.manifest = {
+    bridgeVersion : cfg.version,
+    restRoot      : cfg.restRoot,
+    instructions  : cfg.doctrine,
+    server        : cfg.server,
+    libraries     : libraries,
+  };
+  console.info(
+    "[wp-claude-bridge] ready v%s — libraries: %s",
+    cfg.version,
+    Object.keys(libraries || {}).filter(function (k) { return !k.startsWith("__"); }).join(", ") || "none"
+  );
+})();
+', 'after' );
 } );
 
 // =============================================================================
@@ -379,8 +444,7 @@ define( 'CLAUDE_BRIDGE_BASE_DOCTRINE', <<<'MD'
 # Claude WP Bridge — Operating Instructions
 
 You are assisting with WordPress / WooCommerce client work through the Chrome
-extension. These are your standing instructions on every site. A per-site overlay
-may be appended below this section; where it conflicts, the overlay wins.
+extension. These are your standing instructions for this session.
 
 ## Orientation
 - The Claude Bridge plugin is active on this site. Use `GET /wp-json/claude-bridge/v1/context`
@@ -402,13 +466,10 @@ may be appended below this section; where it conflicts, the overlay wins.
 - On any failure mid-sequence: STOP, report current state, and let the operator
   take over as admin.
 
-## Recipes
-- For known operations load the matching recipe and follow its decomposed steps.
-- If no recipe fits, propose a decomposition for review before acting.
-
 ## Output
 - Lead with the plan / diff, not prose. Reference order / user / post IDs explicitly.
 - After each step, state what changed and what you verified.
+- For any multi-step operation, propose the full decomposition and wait for approval before acting.
 MD
 );
 
@@ -416,9 +477,9 @@ function claude_bridge_instructions() {
     $ctx = claude_bridge_context()->get_data();
 
     return rest_ensure_response( [
-        'doctrine' => CLAUDE_BRIDGE_BASE_DOCTRINE,
-        'site'     => $ctx['site'],
-        'plugins'  => array_column( $ctx['plugins'], 'version', 'name' ),
+        'doctrine'    => CLAUDE_BRIDGE_BASE_DOCTRINE,
+        'site'        => $ctx['site'],
+        'plugins'     => array_column( $ctx['plugins'], 'version', 'name' ),
         'woocommerce' => $ctx['woocommerce'],
         'snippets'    => $ctx['snippets'],
         'acf'         => $ctx['acf'],
@@ -640,16 +701,17 @@ function claude_bridge_introspect_scheduler() {
     }
 
     // Fall back to wp_cron
-    $crons = _get_cron_array();
+    $crons = (array) get_option( 'cron' );
     $out   = [];
     foreach ( $crons as $timestamp => $jobs ) {
+        if ( ! is_array( $jobs ) ) { continue; } // skip 'version' key
         foreach ( $jobs as $hook => $variants ) {
             foreach ( $variants as $args ) {
                 $out[] = [
-                    'hook'      => $hook,
-                    'next_run'  => date( 'c', $timestamp ),
-                    'interval'  => $args['interval'] ?? null,
-                    'schedule'  => $args['schedule'] ?? null,
+                    'hook'     => $hook,
+                    'next_run' => gmdate( 'c', (int) $timestamp ),
+                    'interval' => $args['interval'] ?? null,
+                    'schedule' => $args['schedule'] ?? null,
                 ];
             }
         }

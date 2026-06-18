@@ -1,7 +1,0 @@
-{
-  "schema": 1,
-  "id": "purge-failed-orders",
-  "title": "Purge failed WooCommerce orders from CC-testing bad actors",
-  "summary": "Identify and remove failed orders (and orphaned user accounts) created by carding attempts. dry_run returns a plan first.",
-  "status": "stub — decomposition pending"
-}
