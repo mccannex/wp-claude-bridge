@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Claude Bridge
  * Description: Server-side deep layer for wp-claude-bridge. REST endpoints for site context, snippet management, hook/scheduler introspection, and DB schema.
- * Version:     2026.06.17.6
+ * Version:     2026.06.17.7
  * GitHub Plugin URI: https://github.com/mccannex/wp-claude-bridge
  * Primary Branch:    main
  * Release Asset:     true
@@ -310,19 +310,6 @@ add_filter( 'pre_set_site_transient_update_plugins', function ( $transient ) {
     return $transient;
 } );
 
-// Rename the extracted folder from {repo}-{branch}/ to the installed plugin slug.
-add_filter( 'upgrader_source_selection', function ( $source, $remote_source, $upgrader ) {
-    global $wp_filesystem;
-    if ( ! isset( $upgrader->skin->plugin ) || $upgrader->skin->plugin !== CLAUDE_BRIDGE_PLUGIN_FILE ) {
-        return $source;
-    }
-    $desired = trailingslashit( $remote_source ) . dirname( CLAUDE_BRIDGE_PLUGIN_FILE ) . '/';
-    if ( $source !== $desired ) {
-        $wp_filesystem->move( $source, $desired );
-        return $desired;
-    }
-    return $source;
-}, 10, 3 );
 
 // Populate the "View details" plugin info popup.
 add_filter( 'plugins_api', function ( $result, $action, $args ) {
