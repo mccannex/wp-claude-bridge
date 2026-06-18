@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Claude Bridge
  * Description: Server-side deep layer for wp-claude-bridge. REST endpoints for site context, snippet management, hook/scheduler introspection, and DB schema.
- * Version:     2026.06.17.8
+ * Version:     2026.06.17.9
  * GitHub Plugin URI: https://github.com/mccannex/wp-claude-bridge
  * Primary Branch:    main
  * Release Asset:     true
@@ -189,7 +189,7 @@ add_action( 'admin_footer', function () {
             const text = [
                 `I'm working on my WordPress site and I'd like your help with some tasks. Please follow these operating guidelines for this session:`,
                 '',
-                m.instructions,
+                <?php echo wp_json_encode( CLAUDE_BRIDGE_BASE_DOCTRINE ); ?>,
                 '',
                 '---',
                 '',
@@ -275,14 +275,13 @@ add_action( 'admin_enqueue_scripts', function () {
         'restRoot' => get_rest_url(),
         'nonce'    => wp_create_nonce( 'wp_rest' ),
         'version'  => CLAUDE_BRIDGE_VERSION,
-        'doctrine' => CLAUDE_BRIDGE_BASE_DOCTRINE,
         'server'   => [
-            'version'      => CLAUDE_BRIDGE_VERSION,
-            'site'         => claude_bridge_site_info(),
-            'plugins'      => claude_bridge_active_plugins(),
-            'woocommerce'  => claude_bridge_woocommerce(),
-            'snippets'     => claude_bridge_snippet_plugins_info(),
-            'capabilities' => claude_bridge_current_caps(),
+            'version'     => CLAUDE_BRIDGE_VERSION,
+            'site'        => claude_bridge_site_info(),
+            'plugins'     => claude_bridge_active_plugins(),
+            'woocommerce' => claude_bridge_woocommerce(),
+            'snippets'    => claude_bridge_snippet_plugins_info(),
+            'is_admin'    => current_user_can( 'manage_options' ),
         ],
     ] );
 
@@ -309,23 +308,17 @@ add_action( 'admin_enqueue_scripts', function () {
 })();
 ', 'before' );
 
-    // Manifest: runs walker and assembles window.__claude.manifest after facades.js.
+    // Manifest: assembles window.__claude.manifest after facades.js.
+    // Libraries are NOT pre-walked — call window.__claudeWalker() on demand.
     wp_add_inline_script( 'claude-bridge-facades', '
 (function () {
-  var cfg       = window.wpClaudeBridge;
-  var libraries = typeof window.__claudeWalker === "function" ? window.__claudeWalker() : {};
+  var cfg = window.wpClaudeBridge;
   window.__claude.manifest = {
     bridgeVersion : cfg.version,
     restRoot      : cfg.restRoot,
-    instructions  : cfg.doctrine,
     server        : cfg.server,
-    libraries     : libraries,
   };
-  console.info(
-    "[wp-claude-bridge] ready v%s — libraries: %s",
-    cfg.version,
-    Object.keys(libraries || {}).filter(function (k) { return !k.startsWith("__"); }).join(", ") || "none"
-  );
+  console.info("[wp-claude-bridge] ready v%s", cfg.version);
 })();
 ', 'after' );
 } );
