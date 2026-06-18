@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Claude Bridge
  * Description: Server-side deep layer for wp-claude-bridge. REST endpoints for site context, snippet management, hook/scheduler introspection, and DB schema.
- * Version:     2026.06.17.10
+ * Version:     2026.06.17.11
  * GitHub Plugin URI: https://github.com/mccannex/wp-claude-bridge
  * Primary Branch:    main
  * Release Asset:     true
@@ -176,15 +176,15 @@ add_action( 'admin_footer', function () {
             if (!m) { throw new Error('window.__claude.manifest not ready'); }
             const s = m.server || {};
 
-            const wc = s.woocommerce
-                ? `WooCommerce ${s.woocommerce.version} (${s.woocommerce.currency}) — statuses: ${Object.keys(s.woocommerce.order_statuses || {}).join(', ')}`
-                : 'Not active';
-
             const snippetLines = Object.entries(s.snippets || {})
                 .map(([k,v]) => `  ${k}: ${v.active ? 'active v'+v.version : 'not active'}`)
                 .join('\n');
 
             const pluginNames = (s.plugins || []).map(p => p.name).join(', ');
+
+            const wcLine = s.woocommerce
+                ? `WooCommerce ${s.woocommerce.version} (${s.woocommerce.currency}) — statuses: ${Object.keys(s.woocommerce.order_statuses || {}).join(', ')}`
+                : null;
 
             const text = [
                 `I'm working on my WordPress site and I'd like your help with some tasks. Please follow these operating guidelines for this session:`,
@@ -198,13 +198,12 @@ add_action( 'admin_footer', function () {
                 `REST root: ${m.restRoot}`,
                 '',
                 `Active plugins: ${pluginNames}`,
-                '',
-                `WooCommerce: ${wc}`,
+                wcLine ? `\nWooCommerce: ${wcLine}` : null,
                 '',
                 `Snippet plugins:\n${snippetLines}`,
                 '',
                 `Claude Bridge v${m.bridgeVersion} — endpoints at ${m.restRoot}claude-bridge/v1/`,
-            ].join('\n');
+            ].filter(l => l !== null).join('\n');
 
             navigator.clipboard.writeText(text).then(() => {
                 if (label) { label.textContent = 'Copied!'; setTimeout(() => label.textContent = 'Copy session prompt', 2000); }
