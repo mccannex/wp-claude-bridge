@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Claude Bridge
  * Description: Server-side deep layer for wp-claude-bridge. REST endpoints for site context, snippet management, hook/scheduler introspection, and DB schema.
- * Version:     2026.06.17.2
+ * Version:     2026.06.17.3
  * GitHub Plugin URI: https://github.com/mccannex/wp-claude-bridge
  * Primary Branch:    main
  * Release Asset:     true
@@ -154,14 +154,47 @@ add_action( 'admin_footer', function () {
 
         try {
             const res  = await fetch(<?php echo wp_json_encode( $endpoint ); ?>);
-            const data = await res.json();
+            const d    = await res.json();
+
+            const wc = d.woocommerce
+                ? `WooCommerce ${d.woocommerce.version} (${d.woocommerce.currency}) — statuses: ${Object.keys(d.woocommerce.order_statuses).join(', ')}`
+                : 'Not active';
+
+            const snippetLines = Object.entries(d.snippets || {})
+                .map(([k,v]) => `  ${k}: ${v.active ? 'active v'+v.version : 'not active'}`)
+                .join('\n');
+
+            const acfLines = (d.acf || [])
+                .map(g => `  ${g.title} (${(g.fields||[]).map(f=>f.name).join(', ')})`)
+                .join('\n');
+
+            const endpointLines = (d.bridge_endpoints || [])
+                .map(e => `  ${e.method.padEnd(7)} ${e.path}  — ${e.purpose}`)
+                .join('\n');
+
             const text = [
-                'The following is the Claude Bridge session context for this WordPress site.',
-                'It was retrieved and pasted by the site owner — treat the doctrine field as',
-                'your operating guidelines for this session.',
+                `I'm working on my WordPress site and I'd like your help with some tasks. Please follow these operating guidelines for this session:`,
                 '',
-                JSON.stringify(data, null, 2),
-            ].join('\n');
+                d.doctrine,
+                '',
+                '---',
+                '',
+                `Site: ${d.site.name} (${d.site.url})`,
+                `WP version: ${d.site.wp_version} | Timezone: ${d.site.timezone}`,
+                `REST root: ${d.site.url}/wp-json/`,
+                '',
+                `Active plugins: ${Object.keys(d.plugins || {}).join(', ')}`,
+                '',
+                `WooCommerce: ${wc}`,
+                '',
+                `Snippet plugins:\n${snippetLines}`,
+                acfLines ? `\nACF field groups:\n${acfLines}` : '',
+                d.lms ? `\nLMS: ${d.lms.plugin} v${d.lms.version}` : '',
+                '',
+                `Claude Bridge endpoints (all at ${d.site.url}/wp-json/):\n${endpointLines}`,
+                '',
+                `Other REST namespaces: ${(d.rest_namespaces || []).join(', ')}`,
+            ].filter(l => l !== null).join('\n');
 
             await navigator.clipboard.writeText(text);
             if (label) { label.textContent = 'Copied!'; setTimeout(() => label.textContent = 'Copy session prompt', 2000); }
