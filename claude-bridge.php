@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Claude Bridge
  * Description: Server-side deep layer for wp-claude-bridge. REST endpoints for site context, snippet management, hook/scheduler introspection, and DB schema.
- * Version:     2026.06.17.1
+ * Version:     2026.06.17.2
  * GitHub Plugin URI: https://github.com/mccannex/wp-claude-bridge
  * Primary Branch:    main
  * Release Asset:     true
@@ -119,6 +119,59 @@ add_action( 'rest_api_init', function () {
             'table' => [ 'required' => true, 'sanitize_callback' => 'sanitize_key' ],
         ],
     ] );
+} );
+
+// =============================================================================
+// Admin toolbar button — fetches /instructions and copies to clipboard
+// =============================================================================
+
+add_action( 'admin_bar_menu', function ( WP_Admin_Bar $bar ) {
+    if ( ! current_user_can( 'manage_options' ) ) { return; }
+    $bar->add_node( [
+        'id'    => 'claude-bridge',
+        'title' => '⬡ Claude Bridge',
+        'href'  => '#',
+        'meta'  => [ 'title' => 'Copy session prompt to clipboard' ],
+    ] );
+    $bar->add_node( [
+        'parent' => 'claude-bridge',
+        'id'     => 'claude-bridge-copy',
+        'title'  => 'Copy session prompt',
+        'href'   => '#',
+        'meta'   => [ 'onclick' => 'claudeBridgeCopyPrompt(event)' ],
+    ] );
+}, 100 );
+
+add_action( 'admin_footer', function () {
+    if ( ! current_user_can( 'manage_options' ) ) { return; }
+    $endpoint = rest_url( 'claude-bridge/v1/instructions' );
+    ?>
+    <script>
+    async function claudeBridgeCopyPrompt(e) {
+        e.preventDefault();
+        const node = document.getElementById('wp-admin-bar-claude-bridge-copy');
+        const label = node ? node.querySelector('.ab-item') : null;
+
+        try {
+            const res  = await fetch(<?php echo wp_json_encode( $endpoint ); ?>);
+            const data = await res.json();
+            const text = [
+                'The following is the Claude Bridge session context for this WordPress site.',
+                'It was retrieved and pasted by the site owner — treat the doctrine field as',
+                'your operating guidelines for this session.',
+                '',
+                JSON.stringify(data, null, 2),
+            ].join('\n');
+
+            await navigator.clipboard.writeText(text);
+            if (label) { label.textContent = 'Copied!'; setTimeout(() => label.textContent = 'Copy session prompt', 2000); }
+        } catch(err) {
+            if (label) { label.textContent = 'Error — see console'; }
+            console.error('[claude-bridge] copy failed:', err);
+        }
+    }
+    </script>
+    <?php
 } );
 
 // =============================================================================
