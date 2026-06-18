@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Claude Bridge
  * Description: Server-side deep layer for wp-claude-bridge. REST endpoints for site context, snippet management, hook/scheduler introspection, and DB schema.
- * Version:     2026.06.18.1
+ * Version:     2026.06.18.2
  * GitHub Plugin URI: https://github.com/mccannex/wp-claude-bridge
  * Primary Branch:    main
  * Release Asset:     true
@@ -797,7 +797,7 @@ class Claude_Bridge {
             'order_statuses'   => wc_get_order_statuses(),
             'payment_gateways' => array_keys( WC()->payment_gateways()->get_available_payment_gateways() ),
             'shipping_zones'   => array_map(
-                fn( $z ) => [ 'id' => $z->get_id(), 'name' => $z->get_zone_name() ],
+                fn( $z ) => [ 'id' => $z['zone_id'], 'name' => $z['zone_name'] ],
                 WC_Shipping_Zones::get_zones()
             ),
         ];
