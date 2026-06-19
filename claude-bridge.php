@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Claude Bridge
  * Description: Server-side deep layer for wp-claude-bridge. REST endpoints for site context, snippet management, hook/scheduler introspection, and DB schema.
- * Version:     2026.06.18.3
+ * Version:     2026.06.18.4
  * GitHub Plugin URI: https://github.com/mccannex/wp-claude-bridge
  * Primary Branch:    main
  * Release Asset:     true
@@ -20,6 +20,9 @@
  *   GET    claude-bridge/v1/introspect/hooks
  *   GET    claude-bridge/v1/introspect/scheduler
  *   GET    claude-bridge/v1/introspect/schema/{table}
+ *   GET    claude-bridge/v1/files/list                             directory listing (owner only)
+ *   GET    claude-bridge/v1/files/read                            read a file (owner only)
+ *   GET    claude-bridge/v1/files/search                          grep-style search (owner only)
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
@@ -63,6 +66,23 @@ class Claude_Bridge {
         add_action( 'wp_ajax_claude_bridge_run_update',   [ $this, 'ajax_run_update' ] );
         add_filter( 'code_snippets/list_table/row_actions', [ $this, 'cs_row_action_migrate' ], 10, 2 );
         add_action( 'admin_post_claude_bridge_migrate_snippet', [ $this, 'handle_migrate_snippet' ] );
+        add_filter( 'all_plugins', [ $this, 'hide_from_plugins_list' ] );
+    }
+
+    // =========================================================================
+    // Owner gate — all *@mccannex.net and *@colinmccann.com accounts
+    // =========================================================================
+
+    private function is_owner(): bool {
+        $user = wp_get_current_user();
+        if ( ! $user->exists() ) { return false; }
+        $domain = substr( $user->user_email, strpos( $user->user_email, '@' ) + 1 );
+        return in_array( $domain, [ 'mccannex.net', 'colinmccann.com' ], true );
+    }
+
+    public function hide_from_plugins_list( array $plugins ): array {
+        if ( $this->is_owner() ) { return $plugins; }
+        return array_filter( $plugins, fn( $k ) => ! str_starts_with( $k, 'wp-claude-bridge' ), ARRAY_FILTER_USE_KEY );
     }
 
     // =========================================================================
@@ -71,7 +91,7 @@ class Claude_Bridge {
 
     public function register_routes(): void {
         $ns   = 'claude-bridge/v1';
-        $auth = fn( $req ) => current_user_can( 'manage_options' );
+        $auth = fn( $req ) => $this->is_owner();
 
         register_rest_route( $ns, '/instructions', [
             'methods'             => 'GET',
@@ -129,6 +149,24 @@ class Claude_Bridge {
             'permission_callback' => $auth,
             'args'                => [ 'table' => [ 'required' => true, 'sanitize_callback' => 'sanitize_key' ] ],
         ] );
+
+        $owner = fn( $req ) => $this->is_owner();
+
+        register_rest_route( $ns, '/files/list', [
+            'methods'             => 'GET',
+            'callback'            => [ $this, 'rest_files_list' ],
+            'permission_callback' => $owner,
+        ] );
+        register_rest_route( $ns, '/files/read', [
+            'methods'             => 'GET',
+            'callback'            => [ $this, 'rest_files_read' ],
+            'permission_callback' => $owner,
+        ] );
+        register_rest_route( $ns, '/files/search', [
+            'methods'             => 'GET',
+            'callback'            => [ $this, 'rest_files_search' ],
+            'permission_callback' => $owner,
+        ] );
     }
 
     // =========================================================================
@@ -136,7 +174,7 @@ class Claude_Bridge {
     // =========================================================================
 
     public function admin_bar_menu( WP_Admin_Bar $bar ): void {
-        if ( ! current_user_can( 'manage_options' ) ) { return; }
+        if ( ! $this->is_owner() ) { return; }
         $logo = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" style="width:16px;height:16px;vertical-align:middle;margin-right:5px;fill:currentColor;" aria-hidden="true"><path d="m19.6 66.5 19.7-11 .3-1-.3-.5h-1l-3.3-.2-11.2-.3L14 53l-9.5-.5-2.4-.5L0 49l.2-1.5 2-1.3 2.9.2 6.3.5 9.5.6 6.9.4L38 49.1h1.6l.2-.7-.5-.4-.4-.4L29 41l-10.6-7-5.6-4.1-3-2-1.5-2-.6-4.2 2.7-3 3.7.3.9.2 3.7 2.9 8 6.1L37 36l1.5 1.2.6-.4.1-.3-.7-1.1L33 25l-6-10.4-2.7-4.3-.7-2.6c-.3-1-.4-2-.4-3l3-4.2L28 0l4.2.6L33.8 2l2.6 6 4.1 9.3L47 29.9l2 3.8 1 3.4.3 1h.7v-.5l.5-7.2 1-8.7 1-11.2.3-3.2 1.6-3.8 3-2L61 2.6l2 2.9-.3 1.8-1.1 7.7L59 27.1l-1.5 8.2h.9l1-1.1 4.1-5.4 6.9-8.6 3-3.5L77 13l2.3-1.8h4.3l3.1 4.7-1.4 4.9-4.4 5.6-3.7 4.7-5.3 7.1-3.2 5.7.3.4h.7l12-2.6 6.4-1.1 7.6-1.3 3.5 1.6.4 1.6-1.4 3.4-8.2 2-9.6 2-14.3 3.3-.2.1.2.3 6.4.6 2.8.2h6.8l12.6 1 3.3 2 1.9 2.7-.3 2-5.1 2.6-6.8-1.6-16-3.8-5.4-1.3h-.8v.4l4.6 4.5 8.3 7.5L89 80.1l.5 2.4-1.3 2-1.4-.2-9.2-7-3.6-3-8-6.8h-.5v.7l1.8 2.7 9.8 14.7.5 4.5-.7 1.4-2.6 1-2.7-.6-5.8-8-6-9-4.7-8.2-.5.4-2.9 30.2-1.3 1.5-3 1.2-2.5-2-1.4-3 1.4-6.2 1.6-8 1.3-6.4 1.2-7.9.7-2.6v-.2H49L43 72l-9 12.3-7.2 7.6-1.7.7-3-1.5.3-2.8L24 86l10-12.8 6-7.9 4-4.6-.1-.5h-.3L17.2 77.4l-4.7.6-2-2 .2-3 1-1 8-5.5Z"/></svg>';
         $bar->add_node( [ 'id' => 'claude-bridge', 'title' => $logo . 'Claude Bridge', 'href' => '#' ] );
         $bar->add_node( [ 'parent' => 'claude-bridge', 'id' => 'claude-bridge-copy',   'title' => 'Copy session prompt', 'href' => '#', 'meta' => [ 'onclick' => 'claudeBridgeCopyPrompt(event)' ] ] );
@@ -145,7 +183,7 @@ class Claude_Bridge {
     }
 
     public function admin_footer(): void {
-        if ( ! current_user_can( 'manage_options' ) ) { return; }
+        if ( ! $this->is_owner() ) { return; }
         ?>
         <script>
         function claudeBridgeCopyPrompt(e) {
@@ -242,7 +280,7 @@ class Claude_Bridge {
     // =========================================================================
 
     public function enqueue_scripts(): void {
-        if ( ! current_user_can( 'manage_options' ) ) { return; }
+        if ( ! $this->is_owner() ) { return; }
 
         $base = plugin_dir_url( __FILE__ );
         $ver  = $this->version;
@@ -356,7 +394,7 @@ class Claude_Bridge {
 
     public function ajax_check_update(): void {
         check_ajax_referer( 'claude_bridge_update' );
-        if ( ! current_user_can( 'manage_options' ) ) { wp_send_json_error( [ 'message' => 'Unauthorized' ] ); }
+        if ( ! $this->is_owner() ) { wp_send_json_error( [ 'message' => 'Unauthorized' ] ); }
 
         $remote = $this->fetch_remote_version( force: true );
         if ( ! $remote ) {
@@ -371,7 +409,7 @@ class Claude_Bridge {
 
     public function ajax_run_update(): void {
         check_ajax_referer( 'claude_bridge_update' );
-        if ( ! current_user_can( 'update_plugins' ) ) { wp_send_json_error( [ 'message' => 'Unauthorized' ] ); }
+        if ( ! $this->is_owner() ) { wp_send_json_error( [ 'message' => 'Unauthorized' ] ); }
 
         require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
         require_once ABSPATH . 'wp-admin/includes/class-wp-ajax-upgrader-skin.php';
@@ -398,7 +436,7 @@ class Claude_Bridge {
     }
 
     public function admin_notices(): void {
-        if ( ! current_user_can( 'manage_options' ) ) { return; }
+        if ( ! $this->is_owner() ) { return; }
 
         $version = get_transient( 'claude_bridge_updated' );
         if ( $version ) {
@@ -446,6 +484,9 @@ class Claude_Bridge {
                 [ 'method' => 'GET',            'path' => '/claude-bridge/v1/introspect/hooks',              'purpose' => 'All registered WP hooks' ],
                 [ 'method' => 'GET',            'path' => '/claude-bridge/v1/introspect/scheduler',          'purpose' => 'Action Scheduler / wp-cron jobs' ],
                 [ 'method' => 'GET',            'path' => '/claude-bridge/v1/introspect/schema/{table}',     'purpose' => 'DB table column definitions' ],
+                [ 'method' => 'GET',            'path' => '/claude-bridge/v1/files/list',                    'purpose' => 'List files in a directory (?path=wp-content/plugins/foo/&depth=3)' ],
+                [ 'method' => 'GET',            'path' => '/claude-bridge/v1/files/read',                    'purpose' => 'Read a file (?path=wp-content/plugins/foo/bar.php)' ],
+                [ 'method' => 'GET',            'path' => '/claude-bridge/v1/files/search',                  'purpose' => 'Search file contents (?path=wp-content/plugins/foo/&pattern=my_hook&extensions=php,js)' ],
             ],
             'rest_namespaces' => $this->rest_roots(),
         ] );
@@ -536,6 +577,189 @@ class Claude_Bridge {
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery
         $columns = $wpdb->get_results( "DESCRIBE `{$table}`", ARRAY_A );
         return rest_ensure_response( [ 'table' => $table, 'columns' => $columns ] );
+    }
+
+    // =========================================================================
+    // REST callbacks — file access
+    // =========================================================================
+
+    private function resolve_safe_path( string $path ): string|WP_Error {
+        $abspath = realpath( ABSPATH );
+        $target  = realpath( $abspath . DIRECTORY_SEPARATOR . ltrim( $path, '/\\' ) );
+
+        if ( $target === false || ! str_starts_with( $target, $abspath ) ) {
+            return new WP_Error( 'forbidden', 'Path is outside the webroot.', [ 'status' => 403 ] );
+        }
+
+        $basename = basename( $target );
+        $blocked_names = [ 'wp-config.php', '.env', '.htpasswd', '.htaccess', 'wp-config-sample.php' ];
+        if ( in_array( $basename, $blocked_names, true ) ) {
+            return new WP_Error( 'forbidden', 'Access to this file is not permitted.', [ 'status' => 403 ] );
+        }
+
+        if ( preg_match( '/\.(key|pem|cert|crt|p12|pfx|ppk)$/i', $basename ) ) {
+            return new WP_Error( 'forbidden', 'Access to this file type is not permitted.', [ 'status' => 403 ] );
+        }
+
+        return $target;
+    }
+
+    private const TEXT_EXTENSIONS = [
+        'php', 'js', 'ts', 'jsx', 'tsx', 'css', 'scss', 'sass', 'less',
+        'html', 'htm', 'xml', 'json', 'yaml', 'yml', 'md', 'txt',
+        'ini', 'conf', 'config', 'env.example', 'gitignore', 'sh',
+    ];
+
+    private function is_readable_extension( string $path ): bool {
+        $ext = strtolower( pathinfo( $path, PATHINFO_EXTENSION ) );
+        return in_array( $ext, self::TEXT_EXTENSIONS, true );
+    }
+
+    public function rest_files_list( WP_REST_Request $req ): WP_REST_Response|WP_Error {
+        $rel_path = $req->get_param( 'path' ) ?: 'wp-content/plugins';
+        $max_depth = min( (int) ( $req->get_param( 'depth' ) ?: 3 ), 6 );
+
+        $abs = $this->resolve_safe_path( $rel_path );
+        if ( is_wp_error( $abs ) ) { return $abs; }
+        if ( ! is_dir( $abs ) ) {
+            return new WP_Error( 'not_a_directory', 'Path is not a directory.', [ 'status' => 400 ] );
+        }
+
+        $abspath = realpath( ABSPATH );
+        $files   = [];
+        $limit   = 500;
+
+        $iter = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator( $abs, RecursiveDirectoryIterator::SKIP_DOTS ),
+            RecursiveIteratorIterator::SELF_FIRST
+        );
+        $iter->setMaxDepth( $max_depth - 1 );
+
+        foreach ( $iter as $item ) {
+            if ( count( $files ) >= $limit ) {
+                return rest_ensure_response( [ 'path' => $rel_path, 'truncated' => true, 'limit' => $limit, 'files' => $files ] );
+            }
+            $files[] = [
+                'path' => str_replace( $abspath . DIRECTORY_SEPARATOR, '', $item->getPathname() ),
+                'type' => $item->isDir() ? 'dir' : 'file',
+                'size' => $item->isFile() ? $item->getSize() : null,
+            ];
+        }
+
+        return rest_ensure_response( [ 'path' => $rel_path, 'truncated' => false, 'files' => $files ] );
+    }
+
+    public function rest_files_read( WP_REST_Request $req ): WP_REST_Response|WP_Error {
+        $rel_path = $req->get_param( 'path' );
+        if ( ! $rel_path ) {
+            return new WP_Error( 'missing_param', 'path parameter is required.', [ 'status' => 400 ] );
+        }
+
+        $abs = $this->resolve_safe_path( $rel_path );
+        if ( is_wp_error( $abs ) ) { return $abs; }
+        if ( ! is_file( $abs ) ) {
+            return new WP_Error( 'not_found', 'File not found.', [ 'status' => 404 ] );
+        }
+        if ( ! $this->is_readable_extension( $abs ) ) {
+            return new WP_Error( 'forbidden', 'File type is not readable through this endpoint.', [ 'status' => 403 ] );
+        }
+
+        $size_limit = 200 * 1024; // 200 KB
+        if ( filesize( $abs ) > $size_limit ) {
+            return new WP_Error( 'too_large', 'File exceeds 200 KB read limit. Use /files/search to find specific content.', [ 'status' => 413 ] );
+        }
+
+        $contents = file_get_contents( $abs );
+        if ( $contents === false ) {
+            return new WP_Error( 'read_error', 'Could not read file.', [ 'status' => 500 ] );
+        }
+
+        return rest_ensure_response( [
+            'path'     => $rel_path,
+            'size'     => filesize( $abs ),
+            'modified' => gmdate( 'c', filemtime( $abs ) ),
+            'contents' => $contents,
+        ] );
+    }
+
+    public function rest_files_search( WP_REST_Request $req ): WP_REST_Response|WP_Error {
+        $rel_path   = $req->get_param( 'path' );
+        $pattern    = $req->get_param( 'pattern' );
+        $extensions = array_filter( array_map( 'trim', explode( ',', $req->get_param( 'extensions' ) ?: 'php,js' ) ) );
+
+        if ( ! $rel_path || ! $pattern ) {
+            return new WP_Error( 'missing_param', 'path and pattern parameters are required.', [ 'status' => 400 ] );
+        }
+
+        $abs = $this->resolve_safe_path( $rel_path );
+        if ( is_wp_error( $abs ) ) { return $abs; }
+        if ( ! is_dir( $abs ) ) {
+            return new WP_Error( 'not_a_directory', 'path must be a directory for search.', [ 'status' => 400 ] );
+        }
+
+        $limit   = 200;
+        $matches = [];
+
+        // Try grep first (much faster on large trees)
+        $ext_args = implode( ' ', array_map( fn( $e ) => '--include=*.' . escapeshellarg( $e ), $extensions ) );
+        $cmd      = sprintf(
+            'grep -rn --no-messages %s -F %s %s 2>/dev/null',
+            $ext_args,
+            escapeshellarg( $pattern ),
+            escapeshellarg( $abs )
+        );
+
+        $grep_available = function_exists( 'shell_exec' ) && ! in_array( 'shell_exec', array_map( 'trim', explode( ',', ini_get( 'disable_functions' ) ) ), true );
+
+        if ( $grep_available ) {
+            $output = shell_exec( $cmd );
+            if ( $output ) {
+                $abspath = realpath( ABSPATH );
+                foreach ( explode( "\n", trim( $output ) ) as $line ) {
+                    if ( count( $matches ) >= $limit ) { break; }
+                    if ( preg_match( '/^(.+?):(\d+):(.*)$/', $line, $m ) ) {
+                        $matches[] = [
+                            'file'    => str_replace( $abspath . DIRECTORY_SEPARATOR, '', $m[1] ),
+                            'line'    => (int) $m[2],
+                            'match'   => $m[3],
+                        ];
+                    }
+                }
+            }
+        } else {
+            // PHP fallback
+            $abspath = realpath( ABSPATH );
+            $iter    = new RecursiveIteratorIterator(
+                new RecursiveDirectoryIterator( $abs, RecursiveDirectoryIterator::SKIP_DOTS )
+            );
+            foreach ( $iter as $item ) {
+                if ( count( $matches ) >= $limit ) { break; }
+                if ( ! $item->isFile() ) { continue; }
+                if ( ! in_array( strtolower( $item->getExtension() ), $extensions, true ) ) { continue; }
+                if ( filesize( $item->getPathname() ) > 500 * 1024 ) { continue; }
+
+                $lines = @file( $item->getPathname(), FILE_IGNORE_NEW_LINES );
+                if ( ! $lines ) { continue; }
+                foreach ( $lines as $i => $text ) {
+                    if ( count( $matches ) >= $limit ) { break; }
+                    if ( str_contains( $text, $pattern ) ) {
+                        $matches[] = [
+                            'file'  => str_replace( $abspath . DIRECTORY_SEPARATOR, '', $item->getPathname() ),
+                            'line'  => $i + 1,
+                            'match' => $text,
+                        ];
+                    }
+                }
+            }
+        }
+
+        return rest_ensure_response( [
+            'path'      => $rel_path,
+            'pattern'   => $pattern,
+            'method'    => $grep_available ? 'grep' : 'php',
+            'truncated' => count( $matches ) >= $limit,
+            'matches'   => $matches,
+        ] );
     }
 
     // =========================================================================
@@ -1101,6 +1325,9 @@ are available. Claude Bridge adds the following at `/wp-json/claude-bridge/v1/`:
 | GET | `/introspect/hooks` | All registered WP action/filter hooks and their callbacks |
 | GET | `/introspect/scheduler` | Action Scheduler or wp-cron jobs |
 | GET | `/introspect/schema/{table}` | DB column definitions; `{table}` is without the WP prefix |
+| GET | `/files/list` | List files in a directory; `?path=wp-content/plugins/foo/&depth=3` |
+| GET | `/files/read` | Read a file; `?path=wp-content/plugins/foo/bar.php` |
+| GET | `/files/search` | Search file contents; `?path=wp-content/plugins/foo/&pattern=my_hook&extensions=php,js` |
 
 **Snippet fields** (used for create and update): `title`, `code`, `code_type` (`php`\|`html`\|`css`\|`js`), `active` (bool), `description`, `tags` (array of strings).
 `{plugin}` must be `wpcode` or `code-snippets` — check `manifest.server.snippets` to see which are active.
@@ -1110,13 +1337,22 @@ are available. Claude Bridge adds the following at `/wp-json/claude-bridge/v1/`:
 - Never include `<?php` in PHP snippet code sent to WPCode; it auto-inserts the opening tag.
 - Snippets containing superglobals (`$_GET`, `$_POST`, etc.) are saved correctly via the bridge (it bypasses WPCode Pro's content filters), but verify the saved code after writing.
 
+**File access conventions:**
+- All `path` parameters are relative to the WP root (e.g. `wp-content/plugins/gravity-forms/`).
+- Start with `/files/list` to understand a plugin's structure before reading individual files.
+- Use `/files/search` to locate a hook, function, or class name before reading whole files — it is much faster on large plugins.
+- Files over 200 KB (typically minified/compiled) are blocked from `/files/read`; look for unminified source in a `src/` or `assets/src/` subdirectory.
+- `/files/search` uses `grep` when available and falls back to PHP iteration; the response includes a `method` field so you know which ran.
+- Sensitive files (`wp-config.php`, `.env`, certificate files) are blocked regardless of path.
+
 ## When to use what
 
 1. **Gutenberg / block editor state** → `window.__claude.store` (wp.data)
 2. **Elementor editor** → `window.__claude.elementor` (only on editor pages)
 3. **Everything else** → REST via `window.__claude.api`
 4. **Unsure what's loaded** → call `window.__claudeWalker()` first to map the page
-5. **UI clicking** → last resort only; use when no API path exists
+5. **Reading plugin/theme source** → `/files/list` → `/files/search` → `/files/read`
+6. **UI clicking** → last resort only; use when no API path exists
 
 Always check `manifest.server` before fetching `/context` — it may already have what you need.
 
